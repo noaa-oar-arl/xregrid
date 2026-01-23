@@ -14,15 +14,22 @@ dependencies = [
     "scipy",
     "dask",
     "netCDF4",
+    "esmpy",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest",
+    "pytest-benchmark",
 ]
-# esmpy and xesmf are often better installed via conda,
-# but can be listed here for completeness.
+viz = [
+    "matplotlib",
+    "cartopy",
+    "hvplot",
+    "geoviews",
+]
 full = [
+    "xregrid[test,viz]",
     "xesmf",
 ]
 
