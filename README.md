@@ -6,11 +6,11 @@
 
 **An optimized ESMF-based regridder for xarray with significant performance improvements over existing solutions.**
 
-XRegrid provides high-performance regridding for earth science applications, offering up to **600x speedup** over xESMF while maintaining full accuracy and supporting all major grid types.
+XRegrid provides high-performance regridding for earth science applications, offering up to **27x speedup** over xESMF while maintaining full accuracy and supporting all major grid types.
 
 ## 🚀 Key Features
 
-- **Blazing Fast Performance**: Up to 30x faster than xESMF for single time-step regridding
+- **Blazing Fast Performance**: Up to 27x faster than xESMF for single time-step regridding
 - **Universal Grid Support**: Rectilinear, curvilinear, and unstructured grids (MPAS, ICON)
 - **xarray Integration**: Native support for xarray datasets and data arrays
 - **Memory Efficient**: Optimized sparse matrix operations using scipy
