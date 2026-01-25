@@ -19,17 +19,17 @@ We'll regrid precipitation data from a 2° coarse model grid to a 1° analysis g
 ### Creating the Regridders
 
 ```python
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # Conservative regridder (preserves total precipitation)
-regridder_conservative = ESMPyRegridder(
+regridder_conservative = Regridder(
     source_grid, target_grid,
     method='conservative',
     periodic=True
 )
 
 # Bilinear regridder (for comparison)
-regridder_bilinear = ESMPyRegridder(
+regridder_bilinear = Regridder(
     source_grid, target_grid,
     method='bilinear',
     periodic=True

@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import xarray as xr
-from xregrid import ESMPyRegridder, create_global_grid
+from xregrid import Regridder, create_global_grid
 
 
 def create_sample_data(dask=False, seed=None):
@@ -33,7 +33,7 @@ def test_weight_persistence_eager_lazy(tmp_path):
     target_grid = create_global_grid(res_lat=5.0, res_lon=5.0)
 
     # 2. Generate and save weights
-    regridder_save = ESMPyRegridder(
+    regridder_save = Regridder(
         source_grid,
         target_grid,
         method="bilinear",
@@ -45,7 +45,7 @@ def test_weight_persistence_eager_lazy(tmp_path):
     assert os.path.exists(filename)
 
     # 3. Load weights in a new regridder
-    regridder_load = ESMPyRegridder(
+    regridder_load = Regridder(
         source_grid,
         target_grid,
         method="bilinear",
@@ -86,7 +86,7 @@ def test_weight_persistence_skipna(tmp_path):
 
     target_grid = create_global_grid(res_lat=5.0, res_lon=5.0)
 
-    regridder_save = ESMPyRegridder(
+    regridder_save = Regridder(
         source_grid,
         target_grid,
         method="bilinear",
@@ -97,7 +97,7 @@ def test_weight_persistence_skipna(tmp_path):
 
     res_save = regridder_save(source_da)
 
-    regridder_load = ESMPyRegridder(
+    regridder_load = Regridder(
         source_grid,
         target_grid,
         method="bilinear",

@@ -25,7 +25,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for gallery
 import matplotlib.pyplot as plt
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # Create a synthetic unstructured grid (simplified icosahedral-like)
 np.random.seed(42)  # For reproducible results
@@ -175,13 +175,13 @@ print(
 
 # Create regridders
 print("\nCreating regridders...")
-temp_regridder = ESMPyRegridder(
+temp_regridder = Regridder(
     unstructured_grid,
     structured_grid,
     method="bilinear",  # Good for intensive quantities like temperature
 )
 
-wind_regridder = ESMPyRegridder(
+wind_regridder = Regridder(
     unstructured_grid,
     structured_grid,
     method="bilinear",  # Also good for wind speed

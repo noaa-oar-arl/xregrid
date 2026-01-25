@@ -98,7 +98,7 @@ To verify your installation, run the following test:
 ```python
 import xarray as xr
 import numpy as np
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # Create simple test grids
 source = xr.Dataset({
@@ -112,7 +112,7 @@ target = xr.Dataset({
 })
 
 # Test regridder creation
-regridder = ESMPyRegridder(source, target, method='bilinear')
+regridder = Regridder(source, target, method='bilinear')
 print("✓ XRegrid installation successful!")
 ```
 

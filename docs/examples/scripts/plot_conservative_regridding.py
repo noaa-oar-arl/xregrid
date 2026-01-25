@@ -26,7 +26,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for gallery
 import matplotlib.pyplot as plt
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # Create source and target grids with different resolutions
 # Source: 2° resolution (coarse precipitation model)
@@ -120,11 +120,11 @@ print(
 
 # Create both conservative and bilinear regridders for comparison
 print("\nCreating regridders...")
-regridder_conservative = ESMPyRegridder(
+regridder_conservative = Regridder(
     source_grid, target_grid, method="conservative", periodic=True
 )
 
-regridder_bilinear = ESMPyRegridder(
+regridder_bilinear = Regridder(
     source_grid, target_grid, method="bilinear", periodic=True
 )
 

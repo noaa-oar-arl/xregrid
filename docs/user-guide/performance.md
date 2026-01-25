@@ -46,7 +46,7 @@ The most important optimization for repeated regridding:
 
 ```python
 # First time: compute and save weights
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     reuse_weights=True,
@@ -54,7 +54,7 @@ regridder = ESMPyRegridder(
 )
 
 # Subsequent times: load existing weights (much faster!)
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     reuse_weights=True,
@@ -72,7 +72,7 @@ regridder = ESMPyRegridder(
 Always use `periodic=True` for global grids:
 
 ```python
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     periodic=True  # Critical for performance and accuracy!
@@ -182,7 +182,7 @@ For extremely large grids (>50M points):
 
 ```python
 # Example: 3km global grid (~88M points)
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_3km, target_1deg,
     method='conservative',  # Often required for such large ratios
     reuse_weights=True,     # Essential!
@@ -222,7 +222,7 @@ Use this script to benchmark XRegrid on your system:
 import time
 import numpy as np
 import xarray as xr
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 def benchmark_regridding(source_res, target_res, time_steps=10):
     """Benchmark regridding performance."""
@@ -246,7 +246,7 @@ def benchmark_regridding(source_res, target_res, time_steps=10):
 
     # Time regridder creation
     start = time.time()
-    regridder = ESMPyRegridder(source, target, method='bilinear')
+    regridder = Regridder(source, target, method='bilinear')
     creation_time = time.time() - start
 
     # Time regridding

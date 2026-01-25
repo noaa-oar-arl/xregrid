@@ -32,10 +32,10 @@ Weight reuse is critical for:
 ### Basic Weight Reuse
 
 ```python
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # First time: compute and save weights
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid, target_grid,
     method='bilinear',
     reuse_weights=True,
@@ -43,7 +43,7 @@ regridder = ESMPyRegridder(
 )
 
 # Subsequent times: load existing weights (much faster!)
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid, target_grid,
     method='bilinear',
     reuse_weights=True,
@@ -57,14 +57,14 @@ regridder = ESMPyRegridder(
 ```python
 # Creating new regridder each time (very slow!)
 for t in time_steps:
-    regridder = ESMPyRegridder(source_grid, target_grid)
+    regridder = Regridder(source_grid, target_grid)
     result = regridder(data.isel(time=t))
 ```
 
 #### ✅ Good Practice (Do this)
 ```python
 # Create regridder once, apply to full dataset
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid, target_grid,
     reuse_weights=True,
     filename='weights.nc'
@@ -134,7 +134,7 @@ data = xr.open_dataset('large_file.nc', chunks={
 ```python
 # Process multiple files efficiently
 files = ['file1.nc', 'file2.nc', 'file3.nc']
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid, target_grid,
     reuse_weights=True,
     filename='shared_weights.nc'

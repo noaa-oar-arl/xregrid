@@ -23,7 +23,7 @@ unstructured_grid = xr.Dataset({
 })
 
 # XRegrid automatically detects this as unstructured
-regridder = ESMPyRegridder(
+regridder = Regridder(
     unstructured_grid, structured_grid,
     method='bilinear'
 )
@@ -113,7 +113,7 @@ mpas_grid = xr.Dataset({
     'lon': ds.lonCell   # Convert from radians if needed
 })
 
-regridder = ESMPyRegridder(mpas_grid, target_grid)
+regridder = Regridder(mpas_grid, target_grid)
 ```
 
 ### ICON Integration

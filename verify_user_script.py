@@ -21,7 +21,7 @@ sys.modules["matplotlib"] = MagicMock()
 
 # Add src to path to use xregrid
 sys.path.insert(0, "src")
-from xregrid import ESMPyRegridder  # noqa: E402
+from xregrid import Regridder  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
 
@@ -78,7 +78,7 @@ print(f"Target grid shape: {target_ds.temperature.shape}")
 
 # Create the regridder
 print("Creating regridder...")
-regridder = ESMPyRegridder(source_ds, target_ds, method="bilinear")
+regridder = Regridder(source_ds, target_ds, method="bilinear")
 
 # Perform the regridding
 print("Performing regridding...")

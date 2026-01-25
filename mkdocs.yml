@@ -19,7 +19,7 @@ nav:
     - Unstructured Grids: examples/unstructured-grids.md
     - Performance Tips: examples/performance-optimization.md
   - API Reference:
-    - ESMPyRegridder: api/regridder.md
+    - Regridder: api/regridder.md
     - Utilities: api/utils.md
 
 theme:

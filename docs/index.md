@@ -22,14 +22,14 @@ XRegrid is a high-performance regridding library that builds on top of ESMF (Ear
 ```python
 import xarray as xr
 import numpy as np
-from xregrid import ESMPyRegridder, create_global_grid
+from xregrid import Regridder, create_global_grid
 
 # Create source and target grids
 source_grid = create_global_grid(res_lat=1.0, res_lon=1.0)
 target_grid = create_global_grid(res_lat=0.5, res_lon=0.5)
 
 # Create regridder
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid, target_grid,
     method='bilinear',
     periodic=True
@@ -47,7 +47,7 @@ temperature_regridded = regridder(temperature)
 
 ## Performance Highlights
 
-| Resolution | Grid Points | ESMPyRegridder | xESMF | Speedup |
+| Resolution | Grid Points | Regridder | xESMF | Speedup |
 |------------|-------------|----------------|--------|---------|
 | 1.0° Global | 64,800 | 0.0027s | 0.044s | ~16x |
 | 0.5° Global | 259,200 | 0.0073s | 0.178s | ~24x |

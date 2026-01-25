@@ -11,7 +11,7 @@ We'll regrid synthetic temperature data from a coarse 1° grid to a finer
 
 Key concepts demonstrated:
 - Creating rectilinear grids
-- Using the ESMPyRegridder with bilinear method
+- Using the Regridder with bilinear method
 - Handling global periodicity
 - Visualizing regridding results
 """
@@ -22,7 +22,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend for gallery
 import matplotlib.pyplot as plt
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # Create source grid (1° resolution)
 source_lats = np.linspace(-90, 90, 180)
@@ -82,7 +82,7 @@ print(
 
 # Create the regridder
 print("\nCreating regridder...")
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid,
     target_grid,
     method="bilinear",

@@ -2,7 +2,7 @@ import time
 import numpy as np
 import xarray as xr
 import xesmf as xe
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 
 def create_sample_dataset(nlat, nlon, ntime=1):
@@ -33,7 +33,7 @@ def benchmark_resolution(
     regridder_xesmf = xe.Regridder(
         source_ds.isel(time=0), target_ds.isel(time=0), method="bilinear", periodic=True
     )
-    regridder_xregrid = ESMPyRegridder(
+    regridder_xregrid = Regridder(
         source_ds.isel(time=0), target_ds.isel(time=0), method="bilinear", periodic=True
     )
 

@@ -28,7 +28,7 @@ matplotlib.use("Agg")  # Use non-interactive backend for gallery
 import matplotlib.pyplot as plt
 import time  # noqa: E402
 import os
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 print("Weight Reuse and Performance Optimization")
 print("=" * 50)
@@ -133,7 +133,7 @@ if os.path.exists(weight_file):
     os.remove(weight_file)
 
 start_time = time.time()
-regridder_generate = ESMPyRegridder(
+regridder_generate = Regridder(
     source_grid,
     target_grid,
     method="bilinear",
@@ -152,7 +152,7 @@ print("PERFORMANCE TEST 2: Weight Loading")
 print("=" * 50)
 
 start_time = time.time()
-regridder_load = ESMPyRegridder(
+regridder_load = Regridder(
     source_grid,
     target_grid,
     method="bilinear",
@@ -222,7 +222,7 @@ def workflow_without_reuse(data):
     for t in range(len(data.time)):
         start = time.time()
         # Create new regridder each time (inefficient!)
-        temp_regridder = ESMPyRegridder(
+        temp_regridder = Regridder(
             source_grid, target_grid, method="bilinear", periodic=True
         )
         result = temp_regridder(data.isel(time=t))

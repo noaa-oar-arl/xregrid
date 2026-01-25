@@ -9,7 +9,7 @@ This guide will get you up and running with XRegrid in just a few minutes.
 ```python
 import xarray as xr
 import numpy as np
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 ```
 
 ### 2. Create or Load Grids
@@ -38,7 +38,7 @@ regional_grid = create_regional_grid(
 
 ```python
 # Create regridder with bilinear interpolation
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source_grid,
     target_grid,
     method='bilinear',
@@ -114,7 +114,7 @@ grid = xr.Dataset({
 Best for continuous fields like temperature:
 
 ```python
-regridder = ESMPyRegridder(source, target, method='bilinear')
+regridder = Regridder(source, target, method='bilinear')
 ```
 
 ### Conservative
@@ -122,7 +122,7 @@ regridder = ESMPyRegridder(source, target, method='bilinear')
 Best for extensive quantities like precipitation:
 
 ```python
-regridder = ESMPyRegridder(source, target, method='conservative')
+regridder = Regridder(source, target, method='conservative')
 ```
 
 ### Nearest Neighbor
@@ -131,10 +131,10 @@ Best for categorical data:
 
 ```python
 # Source to destination
-regridder = ESMPyRegridder(source, target, method='nearest_s2d')
+regridder = Regridder(source, target, method='nearest_s2d')
 
 # Destination to source
-regridder = ESMPyRegridder(source, target, method='nearest_d2s')
+regridder = Regridder(source, target, method='nearest_d2s')
 ```
 
 ## Performance Tips
@@ -145,7 +145,7 @@ For repeated regridding with the same grids:
 
 ```python
 # Save weights on first use
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     reuse_weights=True,
@@ -153,7 +153,7 @@ regridder = ESMPyRegridder(
 )
 
 # Subsequent uses will load existing weights
-regridder2 = ESMPyRegridder(
+regridder2 = Regridder(
     source, target,
     method='bilinear',
     reuse_weights=True,
@@ -178,7 +178,7 @@ data_regridded = regridder(data.temperature)
 Always use `periodic=True` for global grids:
 
 ```python
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     periodic=True  # Handles dateline correctly
@@ -190,7 +190,7 @@ regridder = ESMPyRegridder(
 ### Skip NaN Values
 
 ```python
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     skipna=True,
@@ -204,7 +204,7 @@ regridder = ESMPyRegridder(
 # Add mask to source grid (1=valid, 0=masked)
 source_grid['mask'] = (['lat', 'lon'], land_sea_mask)
 
-regridder = ESMPyRegridder(
+regridder = Regridder(
     source, target,
     method='bilinear',
     mask_var='mask'
@@ -217,7 +217,7 @@ regridder = ESMPyRegridder(
 
 ```python
 # Create regridder once
-regridder = ESMPyRegridder(source, target, method='bilinear')
+regridder = Regridder(source, target, method='bilinear')
 
 # Apply directly to the whole dataset
 # This will regrid all data variables containing 'lat' and 'lon'
@@ -229,7 +229,7 @@ regridded_ds = regridder(dataset)
 ```python
 # Process multiple files
 files = ['file1.nc', 'file2.nc', 'file3.nc']
-regridder = ESMPyRegridder(source, target, method='bilinear')
+regridder = Regridder(source, target, method='bilinear')
 
 for file in files:
     ds = xr.open_dataset(file)

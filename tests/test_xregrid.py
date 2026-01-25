@@ -2,7 +2,7 @@ import dask.array as da
 import numpy as np
 import pytest
 import xarray as xr
-from xregrid import ESMPyRegridder
+from xregrid import Regridder, create_grid_from_crs, create_global_grid
 
 
 def create_sample_dataset(
@@ -55,7 +55,7 @@ def test_rectilinear_regrid_numpy():
     source_ds = create_sample_dataset(nlat=45, nlon=90)
     target_ds = create_sample_dataset(nlat=60, nlon=120)
 
-    regridder = ESMPyRegridder(source_ds, target_ds, method="bilinear")
+    regridder = Regridder(source_ds, target_ds, method="bilinear")
     regridded = regridder(source_ds["temperature"])
 
     assert regridded.shape == (60, 120)
@@ -69,7 +69,7 @@ def test_rectilinear_regrid_dask_non_core_chunked():
     source_ds_da = create_sample_dataset(nlat=45, nlon=90, dask=True, chunk_core=False)
     target_ds = create_sample_dataset(nlat=60, nlon=120)
 
-    regridder = ESMPyRegridder(source_ds_np_full, target_ds, method="bilinear")
+    regridder = Regridder(source_ds_np_full, target_ds, method="bilinear")
 
     regridded_da = regridder(source_ds_da["temperature"])
 
@@ -83,7 +83,7 @@ def test_rectilinear_regrid_dask_non_core_chunked():
 def test_rectilinear_regrid_dask_core_chunked():
     source_ds_da = create_sample_dataset(nlat=45, nlon=90, dask=True, chunk_core=True)
     target_ds = create_sample_dataset(nlat=60, nlon=120)
-    regridder = ESMPyRegridder(source_ds_da, target_ds, method="bilinear")
+    regridder = Regridder(source_ds_da, target_ds, method="bilinear")
     regridded_da = regridder(source_ds_da["temperature"])
 
     assert isinstance(regridded_da.data, da.Array)
@@ -96,7 +96,7 @@ def test_regrid_timing(benchmark):
     source_ds = create_sample_dataset(nlat=180, nlon=360)
     target_ds = create_sample_dataset(nlat=360, nlon=720)
 
-    regridder = ESMPyRegridder(source_ds, target_ds, method="bilinear")
+    regridder = Regridder(source_ds, target_ds, method="bilinear")
 
     def do_regrid():
         return regridder(source_ds["temperature"]).values
@@ -107,18 +107,18 @@ def test_regrid_timing(benchmark):
 def test_provenance():
     source_ds = create_sample_dataset(nlat=10, nlon=20)
     target_ds = create_sample_dataset(nlat=15, nlon=25)
-    regridder = ESMPyRegridder(source_ds, target_ds)
+    regridder = Regridder(source_ds, target_ds)
     regridded = regridder(source_ds["temperature"])
 
     assert "history" in regridded.attrs
-    assert "ESMPyRegridder" in regridded.attrs["history"]
+    assert "Regridder" in regridded.attrs["history"]
     assert "bilinear" in regridded.attrs["history"]
 
 
 def test_type_hints():
     # Basic check that the class has expected annotations
     # With from __future__ import annotations, they might be strings
-    ann = ESMPyRegridder.__init__.__annotations__["method"]
+    ann = Regridder.__init__.__annotations__["method"]
     assert ann == "str" or ann is str
 
 
@@ -138,7 +138,7 @@ def test_viz_static_call():
 def test_dask_numpy_identity():
     source_ds = create_sample_dataset(nlat=10, nlon=20)
     target_ds = create_sample_dataset(nlat=15, nlon=25)
-    regridder = ESMPyRegridder(source_ds, target_ds)
+    regridder = Regridder(source_ds, target_ds)
 
     # Eager
     da_eager = source_ds["temperature"]
@@ -155,7 +155,7 @@ def test_attribute_preservation():
     source_ds = create_sample_dataset()
     source_ds.temperature.attrs["units"] = "K"
     target_ds = create_sample_dataset(nlat=10, nlon=20)
-    regridder = ESMPyRegridder(source_ds, target_ds)
+    regridder = Regridder(source_ds, target_ds)
     out = regridder(source_ds.temperature)
     assert out.attrs["units"] == "K"
 
@@ -177,9 +177,9 @@ def test_plot_static_custom_ax():
 def test_regridder_repr():
     source_ds = create_sample_dataset(nlat=10, nlon=20)
     target_ds = create_sample_dataset(nlat=15, nlon=25)
-    regridder = ESMPyRegridder(source_ds, target_ds, method="bilinear", periodic=False)
+    regridder = Regridder(source_ds, target_ds, method="bilinear", periodic=False)
     rep = repr(regridder)
-    assert "ESMPyRegridder" in rep
+    assert "Regridder" in rep
     assert "method=bilinear" in rep
     assert "periodic=False" in rep
     assert "(10, 20)" in rep
@@ -191,8 +191,26 @@ def test_weights_format():
 
     source_ds = create_sample_dataset(nlat=10, nlon=20)
     target_ds = create_sample_dataset(nlat=15, nlon=25)
-    regridder = ESMPyRegridder(source_ds, target_ds)
+    regridder = Regridder(source_ds, target_ds)
     assert isinstance(regridder._weights_matrix, csr_matrix)
+
+
+def test_regrid_with_crs_grid():
+    # Source grid: global 10 degree
+    src_ds = create_global_grid(res_lat=10, res_lon=10)
+    src_ds["data"] = (("lat", "lon"), np.ones((src_ds.lat.size, src_ds.lon.size)))
+
+    # Target grid: UTM zone 33N
+    extent = (400000, 500000, 5000000, 5100000)
+    res = 10000
+    tgt_ds = create_grid_from_crs("EPSG:32633", extent, res)
+
+    regridder = Regridder(src_ds, tgt_ds, method="bilinear")
+    out = regridder(src_ds["data"])
+
+    assert out.shape == (tgt_ds.y.size, tgt_ds.x.size)
+    assert "x" in out.coords
+    assert "y" in out.coords
 
 
 def test_dataset_regrid_identity():
@@ -207,7 +225,7 @@ def test_dataset_regrid_identity():
     source_ds["scalar"] = xr.DataArray(42.0)
 
     target_grid = create_sample_dataset(nlat=nlat_out, nlon=nlon_out)
-    regridder = ESMPyRegridder(source_ds, target_grid)
+    regridder = Regridder(source_ds, target_grid)
 
     # 1. Eager test
     res_ds_eager = regridder(source_ds)

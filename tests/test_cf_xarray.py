@@ -1,7 +1,7 @@
 import xarray as xr
 import numpy as np
 import dask.array as da
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 
 def test_cf_coords_detection():
@@ -38,14 +38,14 @@ def test_cf_coords_detection():
 
     # Test Eager
     ds_src_eager = create_ds(lazy=False)
-    regridder_eager = ESMPyRegridder(ds_src_eager, ds_tgt)
+    regridder_eager = Regridder(ds_src_eager, ds_tgt)
     out_eager = regridder_eager(ds_src_eager["data"])
     assert out_eager.shape == (15, 25)
     assert not out_eager.chunks
 
     # Test Lazy
     ds_src_lazy = create_ds(lazy=True)
-    regridder_lazy = ESMPyRegridder(ds_src_lazy, ds_tgt)
+    regridder_lazy = Regridder(ds_src_lazy, ds_tgt)
     out_lazy = regridder_lazy(ds_src_lazy["data"])
     assert out_lazy.shape == (15, 25)
     assert out_lazy.chunks
@@ -90,7 +90,7 @@ def test_cf_bounds_detection():
         },
     )
 
-    regridder = ESMPyRegridder(ds_src, ds_tgt, method="conservative")
+    regridder = Regridder(ds_src, ds_tgt, method="conservative")
     # If it reached here without error, it found the bounds and ESMPy initialized
     out = regridder(ds_src["data"])
     assert out.shape == (15, 25)

@@ -1,6 +1,13 @@
 import xarray as xr
-from xregrid import create_global_grid, create_regional_grid, load_esmf_file
+from xregrid import (
+    create_global_grid,
+    create_grid_from_crs,
+    create_mesh_from_coords,
+    create_regional_grid,
+    load_esmf_file,
+)
 import os
+import numpy as np
 
 
 def test_create_global_grid():
@@ -41,3 +48,42 @@ def test_load_esmf_file(tmp_path):
     assert "test" in ds_loaded
     assert "history" in ds_loaded.attrs
     assert "Loaded ESMF file" in ds_loaded.attrs["history"]
+
+
+def test_create_grid_from_crs():
+    # Test with EPSG:32633 (UTM zone 33N)
+    extent = (400000, 500000, 5000000, 5100000)
+    res = 10000  # 10km
+    ds = create_grid_from_crs("EPSG:32633", extent, res)
+
+    assert "lat" in ds
+    assert "lon" in ds
+    assert "x" in ds
+    assert "y" in ds
+    assert ds.lat.ndim == 2
+    assert ds.x.size == 10
+    assert ds.y.size == 10
+
+    assert "lat_b" in ds
+    assert "lon_b" in ds
+    assert ds.lat_b.ndim == 2
+    assert ds.lat_b.shape == (11, 11)
+
+    assert "crs" in ds.attrs
+    assert "history" in ds.attrs
+
+
+def test_create_mesh_from_coords():
+    x = np.array([400000, 450000, 500000])
+    y = np.array([5000000, 5050000, 5100000])
+    ds = create_mesh_from_coords(x, y, "EPSG:32633")
+
+    assert "lat" in ds
+    assert "lon" in ds
+    assert ds.lat.ndim == 1
+    assert ds.lon.ndim == 1
+    assert ds.lat.size == 3
+    assert ds.lat.dims == ds.lon.dims
+    assert "n_pts" in ds.lat.dims
+
+    assert "crs" in ds.attrs

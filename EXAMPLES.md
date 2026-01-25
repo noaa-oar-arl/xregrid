@@ -1,6 +1,6 @@
-# ESMPyRegridder: Earth Science Use Cases and Comparison with xESMF
+# Regridder: Earth Science Use Cases and Comparison with xESMF
 
-This document provides examples, performance guidelines, and a direct comparison between `ESMPyRegridder` and `xESMF`.
+This document provides examples, performance guidelines, and a direct comparison between `Regridder` and `xESMF`.
 
 ## 1. Rectilinear Grids (1° to 0.5° Global)
 
@@ -9,7 +9,7 @@ This is a standard use case for atmospheric model output (e.g., CMIP6).
 ```python
 import xarray as xr
 import numpy as np
-from xregrid import ESMPyRegridder
+from xregrid import Regridder
 
 # Source: 1-degree global grid
 ds_in = xr.Dataset({
@@ -24,7 +24,7 @@ ds_out = xr.Dataset({
 })
 
 # Use periodic=True for global grids to handle the date line correctly
-regridder = ESMPyRegridder(ds_in, ds_out, method='bilinear', periodic=True)
+regridder = Regridder(ds_in, ds_out, method='bilinear', periodic=True)
 
 # Apply to a Dataset
 ds_in['temperature'] = (['lat', 'lon'], np.random.rand(180, 360))
@@ -37,11 +37,11 @@ ds_regridded = regridder(ds_in)
 
 ## 2. Curvilinear Grids (Ocean Models / Regional)
 
-Ocean models often use curvilinear grids (e.g., ORCA family) to avoid singularities at the North Pole. The `ESMPyRegridder` correctly handles 2D coordinates and arbitrary dimension names.
+Ocean models often use curvilinear grids (e.g., ORCA family) to avoid singularities at the North Pole. The `Regridder` correctly handles 2D coordinates and arbitrary dimension names.
 
 ## 3. Unstructured Grids (MPAS / ICON)
 
-The `ESMPyRegridder` supports unstructured grids by treating them as an ESMF `LocStream`. This is ideal for regridding from/to cell centers of models like MPAS.
+The `Regridder` supports unstructured grids by treating them as an ESMF `LocStream`. This is ideal for regridding from/to cell centers of models like MPAS.
 
 ```python
 # MPAS Example: Source has 1D dimension 'nCells'
@@ -56,7 +56,7 @@ ds_out = xr.Dataset({
     'lon': (['lon'], np.linspace(0, 360, 360))
 })
 
-regridder = ESMPyRegridder(ds_in, ds_out, method='nearest_s2d')
+regridder = Regridder(ds_in, ds_out, method='nearest_s2d')
 
 # The regridder auto-detects that 'lat' and 'lon' share a dimension,
 # identifying it as an unstructured grid. Currently only nearest-neighbor
@@ -65,7 +65,7 @@ regridder = ESMPyRegridder(ds_in, ds_out, method='nearest_s2d')
 
 ## 4. Ultra-High Resolution (3km Global)
 
-High-resolution climate simulations (e.g., DYAMOND project) reach 3km global resolution (~88 million points). `ESMPyRegridder` is designed to handle these scales efficiently.
+High-resolution climate simulations (e.g., DYAMOND project) reach 3km global resolution (~88 million points). `Regridder` is designed to handle these scales efficiently.
 
 | Resolution | Grid Points | Weights (approx) | Apply Time (2D) |
 | :--- | :--- | :--- | :--- |
@@ -77,23 +77,23 @@ High-resolution climate simulations (e.g., DYAMOND project) reach 3km global res
 
 ## Detailed Performance Breakdown
 
-The following tables compare the **weight application phase** (regridding the actual data) between `ESMPyRegridder` (using `scipy.sparse.coo_matrix`) and `xESMF` (using `sparse.COO`).
+The following tables compare the **weight application phase** (regridding the actual data) between `Regridder` (using `scipy.sparse.coo_matrix`) and `xESMF` (using `sparse.COO`).
 
 ### Table 1: Performance by Resolution (Single Time Step)
-| Resolution | Total Points | ESMPyRegridder (s) | xESMF (s) | Speedup |
+| Resolution | Total Points | Regridder (s) | xESMF (s) | Speedup |
 | :--- | :--- | :--- | :--- | :--- |
 | **1.0°** | 64,800 | 0.0027s | 0.044s | ~16x |
 | **0.5°** | 259,200 | 0.0073s | 0.178s | ~24x |
 | **0.25°** | 1,036,800 | 0.025s | 0.75s | ~30x |
 
 ### Table 2: Performance by Resolution (20 Time Steps)
-| Resolution | Total Points | ESMPyRegridder (s) | xESMF (s) | Speedup |
+| Resolution | Total Points | Regridder (s) | xESMF (s) | Speedup |
 | :--- | :--- | :--- | :--- | :--- |
 | **1.0°** | 64,800 | 0.055s | 0.88s | ~16x |
 | **0.25°** | 1,036,800 | 0.50s | 15.0s | ~30x |
 
 ### Table 3: Dask & Parallel Performance (Chunked Data)
-| Resolution | Time Steps | Chunks | ESMPyRegridder (s) | xESMF (s) | Speedup |
+| Resolution | Time Steps | Chunks | Regridder (s) | xESMF (s) | Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **0.5°** | 100 | 10 | 0.99s | 2.54s | 2.5x |
 | **0.5°** | 100 | 20 | 0.49s | 2.36s | 4.8x |
@@ -104,16 +104,16 @@ The following tables compare the **weight application phase** (regridding the ac
 ## Technical Comparison
 
 ### 1. Accuracy
-`ESMPyRegridder` achieves parity with `xESMF` by correctly implementing:
+`Regridder` achieves parity with `xESMF` by correctly implementing:
 - **Coordinate Transposition**: Inputs are transposed to `(longitude, latitude)` before being passed to ESMF, ensuring correct spherical geometry and periodicity.
 - **Index Alignment**: ESMF's Fortran-order weight indexing is correctly mapped to Python's C-order flattening.
 - **Robust NaN Handling**: The `skipna` logic provides identical results to `xESMF`'s `skipna` by re-normalizing weights based on valid source points.
 
 ### 2. Efficiency
-The primary advantage of `ESMPyRegridder` is its **application speed**.
+The primary advantage of `Regridder` is its **application speed**.
 
-- **Vectorization**: `ESMPyRegridder` flattens spatial dimensions to perform a single large sparse matrix-matrix multiplication. This is highly optimized in Scipy.
-- **Dask Scaling**: The scipy-based backend scales linearly with Dask chunks. As shown in Table 3, doubling the number of chunks for a 100-step 0.5° dataset halved the `ESMPyRegridder` execution time while `xESMF` remained largely bottlenecked by its sparse application logic.
+- **Vectorization**: `Regridder` flattens spatial dimensions to perform a single large sparse matrix-matrix multiplication. This is highly optimized in Scipy.
+- **Dask Scaling**: The scipy-based backend scales linearly with Dask chunks. As shown in Table 3, doubling the number of chunks for a 100-step 0.5° dataset halved the `Regridder` execution time while `xESMF` remained largely bottlenecked by its sparse application logic.
 - **Memory Footprint**: `scipy.sparse.coo_matrix` is more memory-compact than `sparse.COO` for the types of matrices generated by regridding.
 
 ### 3. Feature Support
