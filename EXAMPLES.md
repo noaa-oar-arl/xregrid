@@ -25,6 +25,14 @@ ds_out = xr.Dataset({
 
 # Use periodic=True for global grids to handle the date line correctly
 regridder = ESMPyRegridder(ds_in, ds_out, method='bilinear', periodic=True)
+
+# Apply to a Dataset
+ds_in['temperature'] = (['lat', 'lon'], np.random.rand(180, 360))
+ds_in['humidity'] = (['lat', 'lon'], np.random.rand(180, 360))
+ds_in['scalar'] = 42.0
+
+ds_regridded = regridder(ds_in)
+# Both 'temperature' and 'humidity' are regridded, 'scalar' is preserved.
 ```
 
 ## 2. Curvilinear Grids (Ocean Models / Regional)

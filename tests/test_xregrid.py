@@ -193,3 +193,51 @@ def test_weights_format():
     target_ds = create_sample_dataset(nlat=15, nlon=25)
     regridder = ESMPyRegridder(source_ds, target_ds)
     assert isinstance(regridder._weights_matrix, csr_matrix)
+
+
+def test_dataset_regrid_identity():
+    """Double-Check Test: Verify Dataset regridding matches DataArray regridding for both Eager and Lazy."""
+    nlat_in, nlon_in = 10, 20
+    nlat_out, nlon_out = 15, 25
+
+    source_ds = create_sample_dataset(nlat=nlat_in, nlon=nlon_in)
+    # Add another variable
+    source_ds["humidity"] = source_ds["temperature"] * 0.8
+    # Add a non-spatial variable
+    source_ds["scalar"] = xr.DataArray(42.0)
+
+    target_grid = create_sample_dataset(nlat=nlat_out, nlon=nlon_out)
+    regridder = ESMPyRegridder(source_ds, target_grid)
+
+    # 1. Eager test
+    res_ds_eager = regridder(source_ds)
+    assert isinstance(res_ds_eager, xr.Dataset)
+    assert "temperature" in res_ds_eager
+    assert "humidity" in res_ds_eager
+    assert "scalar" in res_ds_eager
+    assert res_ds_eager["temperature"].shape == (nlat_out, nlon_out)
+    assert res_ds_eager["humidity"].shape == (nlat_out, nlon_out)
+
+    # Compare with individual DataArray regridding
+    res_da_temp = regridder(source_ds["temperature"])
+    # Need to remove history for comparison as they differ
+    res_ds_temp = res_ds_eager["temperature"].copy()
+    res_ds_temp.attrs.pop("history", None)
+    res_da_temp_no_hist = res_da_temp.copy()
+    res_da_temp_no_hist.attrs.pop("history", None)
+    xr.testing.assert_allclose(res_ds_temp, res_da_temp_no_hist)
+
+    # 2. Lazy test
+    source_ds_lazy = source_ds.chunk({"lat": 5, "lon": 10})
+    res_ds_lazy = regridder(source_ds_lazy).compute()
+
+    # Compare eager and lazy results (ignoring history)
+    res_ds_eager_no_hist = res_ds_eager.copy()
+    res_ds_lazy_no_hist = res_ds_lazy.copy()
+    res_ds_eager_no_hist.attrs.pop("history", None)
+    res_ds_lazy_no_hist.attrs.pop("history", None)
+    for v in res_ds_eager_no_hist.data_vars:
+        res_ds_eager_no_hist[v].attrs.pop("history", None)
+        res_ds_lazy_no_hist[v].attrs.pop("history", None)
+
+    xr.testing.assert_allclose(res_ds_eager_no_hist, res_ds_lazy_no_hist)

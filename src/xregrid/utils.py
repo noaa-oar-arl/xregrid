@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Tuple
+from typing import Tuple, Union
 
 import numpy as np
 import xarray as xr
@@ -57,10 +57,7 @@ def create_global_grid(
         ds["lat"].attrs["bounds"] = "lat_b"
         ds["lon"].attrs["bounds"] = "lon_b"
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ds.attrs["history"] = (
-        f"{timestamp}: Created global grid ({res_lat}x{res_lon}) using xregrid."
-    )
+    update_history(ds, f"Created global grid ({res_lat}x{res_lon}) using xregrid.")
 
     return ds
 
@@ -120,10 +117,7 @@ def create_regional_grid(
         ds["lat"].attrs["bounds"] = "lat_b"
         ds["lon"].attrs["bounds"] = "lon_b"
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ds.attrs["history"] = (
-        f"{timestamp}: Created regional grid ({res_lat}x{res_lon}) using xregrid."
-    )
+    update_history(ds, f"Created regional grid ({res_lat}x{res_lon}) using xregrid.")
 
     return ds
 
@@ -146,11 +140,33 @@ def load_esmf_file(filepath: str) -> xr.Dataset:
     # which many ESMF files are.
     ds = xr.open_dataset(filepath)
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    history = f"{timestamp}: Loaded ESMF file from {filepath}."
-    if "history" in ds.attrs:
-        ds.attrs["history"] = f"{history}\n" + ds.attrs["history"]
-    else:
-        ds.attrs["history"] = history
+    update_history(ds, f"Loaded ESMF file from {filepath}.")
 
     return ds
+
+
+def update_history(
+    obj: Union[xr.DataArray, xr.Dataset], message: str
+) -> Union[xr.DataArray, xr.Dataset]:
+    """
+    Update the 'history' attribute of an xarray object with a timestamped message.
+
+    Parameters
+    ----------
+    obj : xr.DataArray or xr.Dataset
+        The xarray object to update.
+    message : str
+        The message to add to the history.
+
+    Returns
+    -------
+    xr.DataArray or xr.Dataset
+        The updated xarray object.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    full_message = f"{timestamp}: {message}"
+    if "history" in obj.attrs:
+        obj.attrs["history"] = f"{full_message}\n" + obj.attrs["history"]
+    else:
+        obj.attrs["history"] = full_message
+    return obj

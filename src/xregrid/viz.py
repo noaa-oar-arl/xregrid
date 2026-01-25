@@ -70,11 +70,27 @@ def plot_static(
 
     if "ax" in kwargs:
         ax = kwargs.pop("ax")
+        # Ensure the existing axes is a GeoAxes if we are using cartopy
+        if not hasattr(ax, "projection"):
+            import warnings
+
+            warnings.warn(
+                "The provided axes is not a Cartopy GeoAxes. "
+                "Geospatial plotting may not work as expected. "
+                "Consider creating axes with `projection=`."
+            )
     else:
         ax = plt.axes(projection=projection)
 
-    im = da.plot(ax=ax, transform=transform, **kwargs)
-    ax.coastlines()
+    # Enforce transform for geospatial accuracy (Aero Protocol)
+    if "transform" not in kwargs:
+        kwargs["transform"] = transform
+
+    im = da.plot(ax=ax, **kwargs)
+
+    if hasattr(ax, "coastlines"):
+        ax.coastlines()
+
     ax.set_title(title)
 
     return im

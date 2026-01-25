@@ -219,15 +219,9 @@ regridder = ESMPyRegridder(
 # Create regridder once
 regridder = ESMPyRegridder(source, target, method='bilinear')
 
-# Apply to multiple variables
-variables = ['temperature', 'humidity', 'pressure']
-results = {}
-
-for var in variables:
-    results[var] = regridder(dataset[var])
-
-# Combine into new dataset
-regridded_ds = xr.Dataset(results)
+# Apply directly to the whole dataset
+# This will regrid all data variables containing 'lat' and 'lon'
+regridded_ds = regridder(dataset)
 ```
 
 ### Batch Processing
