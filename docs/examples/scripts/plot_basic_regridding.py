@@ -199,10 +199,10 @@ print("- Method: Bilinear interpolation")
 print(f"- Source resolution: 1.0° ({len(source_lats)}x{len(source_lons)})")
 print(f"- Target resolution: 0.5° ({len(target_lats)}x{len(target_lons)})")
 print(
-    f"- Grid ratio: {len(target_lats)*len(target_lons) / (len(source_lats)*len(source_lons)):.1f}x more points"
+    f"- Grid ratio: {len(target_lats) * len(target_lons) / (len(source_lats) * len(source_lons)):.1f}x more points"
 )
 print("- Global periodicity: Enabled")
-print(f"- Processing time: {average_time*1000:.1f} ms per regridding")
+print(f"- Processing time: {average_time * 1000:.1f} ms per regridding")
 
 # Show plot if running interactively
 try:

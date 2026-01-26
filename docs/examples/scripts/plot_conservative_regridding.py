@@ -196,10 +196,10 @@ print(f"Conservative regridding:        {conservative_total:.3f} km³/day")
 print(f"Bilinear regridding:           {bilinear_total:.3f} km³/day")
 print("")
 print(
-    f"Conservative error: {abs(conservative_total - original_total)/original_total*100:.4f}%"
+    f"Conservative error: {abs(conservative_total - original_total) / original_total * 100:.4f}%"
 )
 print(
-    f"Bilinear error:     {abs(bilinear_total - original_total)/original_total*100:.2f}%"
+    f"Bilinear error:     {abs(bilinear_total - original_total) / original_total * 100:.2f}%"
 )
 
 # Create comparison plots
@@ -314,7 +314,7 @@ bili_time = (time.time() - start_time) / 5
 
 print(f"Conservative regridding: {cons_time:.4f} seconds")
 print(f"Bilinear regridding:     {bili_time:.4f} seconds")
-print(f"Conservative is {cons_time/bili_time:.1f}x slower than bilinear")
+print(f"Conservative is {cons_time / bili_time:.1f}x slower than bilinear")
 
 print("\nWhen to use each method:")
 print("- Conservative: Flux quantities (precipitation, radiation, heat flux)")

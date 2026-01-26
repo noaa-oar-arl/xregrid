@@ -51,7 +51,7 @@ target_grid = xr.Dataset({"lat": (["lat"], target_lats), "lon": (["lon"], target
 print(f"Source grid: {len(source_lats)}x{len(source_lons)} (0.25° resolution)")
 print(f"Target grid: {len(target_lats)}x{len(target_lons)} (1° resolution)")
 print(
-    f"Grid size ratio: {len(source_lats)*len(source_lons) / (len(target_lats)*len(target_lons)):.1f}x"
+    f"Grid size ratio: {len(source_lats) * len(source_lons) / (len(target_lats) * len(target_lons)):.1f}x"
 )
 
 

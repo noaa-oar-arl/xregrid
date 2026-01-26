@@ -349,7 +349,7 @@ print(f"- Memory expansion: {output_memory_mb / memory_mb:.1f}x")
 # Grid statistics
 print("\nGrid characteristics:")
 print(
-    f"- Unstructured grid density: ~{n_cells / (4 * np.pi * (180/np.pi)**2):.1f} points per degree²"
+    f"- Unstructured grid density: ~{n_cells / (4 * np.pi * (180 / np.pi) ** 2):.1f} points per degree²"
 )
 print(
     f"- Structured grid density: {len(target_lats) * len(target_lons) / (360 * 180):.1f} points per degree²"

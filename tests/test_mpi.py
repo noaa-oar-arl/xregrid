@@ -46,9 +46,11 @@ def test_mpi_weight_gathering():
 
     # Simulate rank 0
     with patch.dict(sys.modules, {"mpi4py": mock_mpi_pkg}):
-        with patch("esmpy.pet_count", return_value=2), patch(
-            "esmpy.local_pet", return_value=0
-        ), patch("esmpy.Regrid") as mock_regrid_class:
+        with (
+            patch("esmpy.pet_count", return_value=2),
+            patch("esmpy.local_pet", return_value=0),
+            patch("esmpy.Regrid") as mock_regrid_class,
+        ):
             mock_regrid = MagicMock()
             mock_regrid.get_factors.return_value = (np.array([1]), np.array([1]))
             mock_regrid.get_weights_dict.return_value = weights_rank0

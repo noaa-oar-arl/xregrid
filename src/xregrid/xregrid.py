@@ -114,10 +114,12 @@ class Regridder:
         self._is_unstructured_tgt: bool = False
         self._total_weights: Optional[np.ndarray] = None
         self._weights_matrix: Optional[coo_matrix] = None
+        self._loaded_method: Optional[str] = None
+        self._loaded_periodic: Optional[bool] = None
 
         if reuse_weights and os.path.exists(filename):
             self._load_weights()
-            # Validate loaded weights against provided grids
+            # Validate loaded weights against provided grids and parameters
             self._validate_weights()
         else:
             self._generate_weights()
@@ -125,7 +127,12 @@ class Regridder:
                 self._save_weights()
 
     def _validate_weights(self) -> None:
-        """Validate loaded weights against the provided source and target grids."""
+        """
+        Validate loaded weights against the provided source and target grids.
+
+        Ensures that shapes, dimension names, regridding method, and periodicity
+        match the requested configuration to maintain scientific integrity.
+        """
         # Get current grid info
         _, _, src_shape, src_dims, _ = self._get_mesh_info(self.source_grid_ds)
         _, _, dst_shape, dst_dims, _ = self._get_mesh_info(self.target_grid_ds)
@@ -139,6 +146,19 @@ class Regridder:
             raise ValueError(
                 f"Target grid shape {dst_shape} does not match "
                 f"loaded weights target shape {self._shape_target}"
+            )
+
+        # Check regridding parameters
+        if self._loaded_method is not None and self._loaded_method != self.method:
+            raise ValueError(
+                f"Requested method '{self.method}' does not match "
+                f"loaded weights method '{self._loaded_method}'"
+            )
+
+        if self._loaded_periodic is not None and self._loaded_periodic != self.periodic:
+            raise ValueError(
+                f"Requested periodic={self.periodic} does not match "
+                f"loaded weights periodic={self._loaded_periodic}"
             )
 
     def _get_mesh_info(
@@ -444,6 +464,7 @@ class Regridder:
                 "dims_target": self._dims_target,
                 "is_unstructured_src": int(self._is_unstructured_src),
                 "is_unstructured_tgt": int(self._is_unstructured_tgt),
+                "method": self.method,
                 "periodic": int(self.periodic),
             },
         )
@@ -465,7 +486,8 @@ class Regridder:
             self._dims_target = tuple(ds_weights.attrs["dims_target"])
             self._is_unstructured_src = bool(ds_weights.attrs["is_unstructured_src"])
             self._is_unstructured_tgt = bool(ds_weights.attrs["is_unstructured_tgt"])
-            self.periodic = bool(ds_weights.attrs.get("periodic", False))
+            self._loaded_periodic = bool(ds_weights.attrs.get("periodic", False))
+            self._loaded_method = ds_weights.attrs.get("method")
 
         self._weights_matrix = coo_matrix(
             (data, (rows, cols)), shape=(n_dst, n_src)

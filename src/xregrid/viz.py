@@ -103,13 +103,21 @@ def plot_static(
     if "ax" in kwargs:
         ax = kwargs.pop("ax")
         # Ensure the existing axes is a GeoAxes if we are using cartopy
-        if not hasattr(ax, "projection"):
+        is_geoaxes = False
+        try:
+            import cartopy.mpl.geoaxes as geoaxes
+
+            is_geoaxes = isinstance(ax, geoaxes.GeoAxes)
+        except ImportError:
+            is_geoaxes = hasattr(ax, "projection")
+
+        if not is_geoaxes:
             import warnings
 
             warnings.warn(
-                "The provided axes is not a Cartopy GeoAxes. "
+                "The provided axes does not appear to be a Cartopy GeoAxes. "
                 "Geospatial plotting may not work as expected. "
-                "Consider creating axes with `projection=`."
+                "Ensure your axes was created with a projection (e.g., plt.axes(projection=...))."
             )
     else:
         ax = plt.axes(projection=projection)
