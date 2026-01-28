@@ -17,6 +17,25 @@ XRegrid is a high-performance regridding library that builds on top of ESMF (Ear
 - **Weight Reuse**: Save and load regridding weights to/from NetCDF files
 - **Grid Utilities**: Built-in functions for quick global and regional grid generation
 
+## Why XRegrid?
+
+While `ESMPy` provides the powerful underlying engine for regridding, it is a low-level library that requires significant boilerplate code to use with `xarray`. `XRegrid` bridges this gap by providing:
+
+1.  **High-level API**: Use `xarray.Dataset` and `xarray.DataArray` directly without manual grid or field creation.
+2.  **Performance**: Optimized sparse matrix application that is up to 35x faster than other ESMF-based wrappers.
+3.  **Correctness**: Automatic handling of coordinate transpositions, periodicity, and metadata.
+
+### XRegrid vs. Raw ESMPy
+
+To regrid a single field, `ESMPy` requires manually creating grids, fields, and handling coordinate pointers. `XRegrid` abstracts this entire process into two lines of code.
+
+| Feature | ESMPy | XRegrid |
+|---------|-------|---------|
+| Grid Definition | Manual `esmpy.Grid` | Native `xarray.Dataset` |
+| Coordinate Handling | Manual pointer filling | Automatic detection |
+| Data Interface | NumPy-only | Xarray (NumPy & Dask) |
+| Code Complexity | ~30-50 lines | 2 lines |
+
 ## Quick Example
 
 ```python

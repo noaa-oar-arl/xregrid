@@ -18,6 +18,7 @@ Each script is self-contained and demonstrates a specific feature:
 - `plot_unstructured_grids.py`: Regridding MPAS/ICON style unstructured grids.
 - `plot_weather_data.py`: Regridding station-like point data.
 - `plot_performance_optimization.py`: Efficient workflows using weight reuse.
+- `plot_esmpy_comparison.py`: Comparing code complexity: ESMPy vs. XRegrid.
 
 ## Running Examples
 

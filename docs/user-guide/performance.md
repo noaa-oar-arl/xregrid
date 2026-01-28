@@ -116,6 +116,90 @@ data = xr.open_dataset(
 )
 ```
 
+## API Usability: XRegrid vs. ESMPy
+
+While XRegrid is faster than xESMF, it also provides a much more intuitive API than raw ESMPy. ESMPy is a powerful low-level interface, but it requires substantial boilerplate to work with xarray datasets.
+
+### Code Comparison
+
+Here is what is required to regrid a simple lat-lon dataset.
+
+#### Using raw ESMPy
+
+```python
+import esmpy
+import numpy as np
+import xarray as xr
+
+# Load data
+ds = xr.tutorial.open_dataset("air_temperature").isel(time=0)
+
+# 1. Create Source Grid (Manual coordinate handling)
+src_grid = esmpy.Grid(
+    np.array([ds.lon.size, ds.lat.size]),
+    staggerloc=[esmpy.StaggerLoc.CENTER],
+    coord_sys=esmpy.CoordSys.SPH_DEG
+)
+src_lon_ptr = src_grid.get_coords(0)
+src_lat_ptr = src_grid.get_coords(1)
+lon_mesh, lat_mesh = np.meshgrid(ds.lon.values, ds.lat.values)
+src_lon_ptr[...] = lon_mesh.T  # ESMF uses (lon, lat) / Fortran order
+src_lat_ptr[...] = lat_mesh.T
+
+# 2. Create Target Grid
+dst_lon = np.arange(200, 331, 1.0)
+dst_lat = np.arange(15, 76, 1.0)
+dst_grid = esmpy.Grid(
+    np.array([len(dst_lon), len(dst_lat)]),
+    staggerloc=[esmpy.StaggerLoc.CENTER],
+    coord_sys=esmpy.CoordSys.SPH_DEG
+)
+dst_lon_ptr = dst_grid.get_coords(0)
+dst_lat_ptr = dst_grid.get_coords(1)
+lon_mesh_dst, lat_mesh_dst = np.meshgrid(dst_lon, dst_lat)
+dst_lon_ptr[...] = lon_mesh_dst.T
+dst_lat_ptr[...] = lat_mesh_dst.T
+
+# 3. Create Fields and Initialize Regrid
+src_field = esmpy.Field(src_grid, name="air")
+dst_field = esmpy.Field(dst_grid, name="air_regridded")
+regrid = esmpy.Regrid(src_field, dst_field, regrid_method=esmpy.RegridMethod.BILINEAR)
+
+# 4. Apply Regrid (Requires manual data copy)
+src_field.data[...] = ds.air.values.T
+regrid(src_field, dst_field)
+
+# 5. Extract result back to xarray
+result = xr.DataArray(
+    dst_field.data.T,
+    coords={"lat": dst_lat, "lon": dst_lon},
+    dims=("lat", "lon")
+)
+```
+
+#### Using XRegrid
+
+```python
+from xregrid import Regridder
+
+# Define target grid as an xarray Dataset
+target_grid = xr.Dataset({
+    "lat": (["lat"], np.arange(15, 76, 1.0)),
+    "lon": (["lon"], np.arange(200, 331, 1.0))
+})
+
+# Create and apply in two steps
+regridder = Regridder(ds, target_grid)
+result = regridder(ds.air)
+```
+
+### Advantages of XRegrid
+
+1.  **Dask Support**: XRegrid works natively with Dask-backed DataArrays, parallelizing the weight application across chunks. ESMPy requires manual implementation of this logic.
+2.  **Metadata Preservation**: XRegrid automatically preserves name, attributes, and non-spatial coordinates.
+3.  **Automatic Detection**: XRegrid uses `cf-xarray` to automatically identify latitude and longitude, even if they aren't named `lat` or `lon`.
+4.  **Sparse Application**: XRegrid uses optimized SciPy sparse matrices for applying weights, which is often faster than the built-in ESMPy `__call__` for large datasets.
+
 ## Detailed Performance Analysis
 
 ### Single Time Step Performance

@@ -18,3 +18,6 @@ Regridding station-like point data to a regular 2D grid using nearest-neighbor m
 
 ### [Performance Optimization](plot_performance_optimization.py)
 Efficient workflows using weight reuse to speed up repeated regridding operations.
+
+### [ESMPy vs. XRegrid](plot_esmpy_comparison.py)
+A comparison of code complexity between raw ESMPy and the XRegrid API.
