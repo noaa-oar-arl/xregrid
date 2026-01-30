@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
 
 import cf_xarray  # noqa: F401
 import numpy as np
@@ -14,49 +14,21 @@ try:
 except ImportError:
     esmpy = None
 
-try:
-    import dask
-    import dask.distributed
-except ImportError:
-    dask = None
-
 from .utils import update_history
+
 
 if TYPE_CHECKING:
     pass
 
 
-# Global cache for workers to reuse ESMF source objects across tasks
-_WORKER_CACHE: Dict[Tuple[int, str, bool, Optional[str]], Any] = {}
+# Global cache for workers to reuse ESMF source objects
+_WORKER_CACHE: dict = {}
 
 
 def _get_mesh_info(
     ds: xr.Dataset,
 ) -> Tuple[xr.DataArray, xr.DataArray, Tuple[int, ...], Tuple[str, ...], bool]:
-    """
-    Detect grid type and extract coordinates and shape.
-
-    Uses cf-xarray for automatic coordinate detection if standard
-    names 'lat' and 'lon' are not present.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        The dataset to extract mesh info from.
-
-    Returns
-    -------
-    lon : xarray.DataArray
-        Longitude coordinate.
-    lat : xarray.DataArray
-        Latitude coordinate.
-    shape : tuple of int
-        Grid shape.
-    dims : tuple of str
-        Coordinate dimensions.
-    is_unstructured : bool
-        Whether the grid is unstructured.
-    """
+    """ Detect grid type and extract coordinates and shape. """
     try:
         lat = ds.cf["latitude"]
         lon = ds.cf["longitude"]
@@ -72,7 +44,11 @@ def _get_mesh_info(
 
     if lat.ndim == 2:
         # Curvilinear
-        if lon.ndim == 2 and lon.dims != lat.dims and set(lon.dims) == set(lat.dims):
+        if (
+            lon.ndim == 2
+            and lon.dims != lat.dims
+            and set(lon.dims) == set(lat.dims)
+        ):
             lon = lon.transpose(*lat.dims)
         return lon, lat, lat.shape, lat.dims, False
     elif lat.ndim == 1:
@@ -103,26 +79,10 @@ def _get_mesh_info(
 
 
 def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
-    """
-    Convert bounds to vertices for ESMF.
-
-    Handles 1D coordinates (N, 2) -> (N+1,) and 2D coordinates (Y, X, 4) -> (Y+1, X+1).
-
-    Parameters
-    ----------
-    b : xarray.DataArray
-        The bounds data array.
-
-    Returns
-    -------
-    np.ndarray
-        The vertex array.
-    """
+    """ Convert bounds to vertices for ESMF. """
     if b.ndim == 2 and b.shape[-1] == 2:
-        # 1D coordinates: (N, 2) -> (N+1,)
         return np.concatenate([b.values[:, 0], b.values[-1:, 1]])
     elif b.ndim == 3 and b.shape[-1] == 4:
-        # 2D coordinates: (Y, X, 4) -> (Y+1, X+1)
         y_size, x_size, _ = b.shape
         vals = b.values
         res = np.empty((y_size + 1, x_size + 1))
@@ -137,21 +97,7 @@ def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
 def _get_grid_bounds(
     ds: xr.Dataset,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Extract grid cell boundaries from a dataset.
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        The dataset to extract bounds from.
-
-    Returns
-    -------
-    lat_b : np.ndarray or None
-        Latitude boundaries.
-    lon_b : np.ndarray or None
-        Longitude boundaries.
-    """
+    """ Extract grid cell boundaries from a dataset. """
     try:
         lat_b_da = ds.cf.get_bounds("latitude")
         lon_b_da = ds.cf.get_bounds("longitude")
@@ -159,10 +105,14 @@ def _get_grid_bounds(
     except (KeyError, AttributeError, ValueError):
         if "lat_b" in ds and "lon_b" in ds:
             lat_b = (
-                ds["lat_b"].values if hasattr(ds["lat_b"], "values") else ds["lat_b"]
+                ds["lat_b"].values
+                if hasattr(ds["lat_b"], "values")
+                else ds["lat_b"]
             )
             lon_b = (
-                ds["lon_b"].values if hasattr(ds["lon_b"], "values") else ds["lon_b"]
+                ds["lon_b"].values
+                if hasattr(ds["lon_b"], "values")
+                else ds["lon_b"]
             )
             return lat_b, lon_b
     return None, None
@@ -174,27 +124,8 @@ def _create_esmf_grid(
     periodic: bool = False,
     mask_var: Optional[str] = None,
 ) -> Union[esmpy.Grid, esmpy.LocStream]:
-    """
-    Creates an ESMF Grid or LocStream (Private helper).
-
-    Parameters
-    ----------
-    ds : xr.Dataset
-        The dataset to create ESMF object from.
-    method : str
-        Regridding method.
-    periodic : bool, default False
-        Whether grid is periodic in longitude.
-    mask_var : str, optional
-        Mask variable name.
-
-    Returns
-    -------
-    Union[esmpy.Grid, esmpy.LocStream]
-        The ESMF object.
-    """
+    """ Creates an ESMF Grid or LocStream. """
     import esmpy
-
     lon, lat, shape, dims, is_unstructured = _get_mesh_info(ds)
 
     if is_unstructured:
@@ -202,7 +133,6 @@ def _create_esmf_grid(
             raise NotImplementedError(
                 f"Method '{method}' is not yet supported for unstructured grids."
             )
-
         locstream = esmpy.LocStream(shape[0], coord_sys=esmpy.CoordSys.SPH_DEG)
         locstream["ESMF:Lon"] = lon.values.astype(np.float64)
         locstream["ESMF:Lat"] = lat.values.astype(np.float64)
@@ -231,10 +161,9 @@ def _create_esmf_grid(
                 pass
 
         has_bounds = lat_b is not None and lon_b is not None
-
         if method == "conservative" and not has_bounds:
             raise ValueError(
-                "Conservative regridding requires cell boundaries (bounds). "
+                f"Conservative regridding requires cell boundaries (bounds). "
                 "Ensure your dataset has 'lat_b' and 'lon_b' or CF-compliant bounds."
             )
 
@@ -251,12 +180,8 @@ def _create_esmf_grid(
             pole_dim=pole_dim,
         )
 
-        grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lon_f.astype(
-            np.float64
-        )
-        grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lat_f.astype(
-            np.float64
-        )
+        grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lon_f.astype(np.float64)
+        grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lat_f.astype(np.float64)
 
         if has_bounds:
             if lon_b.ndim == 1 and lat_b.ndim == 1:
@@ -271,18 +196,14 @@ def _create_esmf_grid(
                 lon_b_vals_f = lon_b_vals_f[:-1, :]
                 lat_b_vals_f = lat_b_vals_f[:-1, :]
 
-            grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CORNER)[...] = (
-                lon_b_vals_f.astype(np.float64)
-            )
-            grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CORNER)[...] = (
-                lat_b_vals_f.astype(np.float64)
-            )
+            grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CORNER)[...] = lon_b_vals_f.astype(np.float64)
+            grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CORNER)[...] = lat_b_vals_f.astype(np.float64)
 
         if mask_var and mask_var in ds:
             grid.add_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)
-            grid.get_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)[
-                ...
-            ] = ds[mask_var].values.T.astype(np.int32)
+            grid.get_item(
+                esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER
+            )[...] = ds[mask_var].values.T.astype(np.int32)
         return grid
 
 
@@ -299,38 +220,9 @@ def _compute_chunk_weights(
     """
     Worker function to compute weights for a specific chunk of the target grid.
     Uses worker-local caching for source ESMF objects.
-
-    Parameters
-    ----------
-    source_ds : xr.Dataset
-        Source grid dataset.
-    chunk_ds : xr.Dataset
-        Target grid chunk dataset.
-    method : str
-        Regridding method.
-    global_indices : np.ndarray
-        Pre-computed global flat indices for the target chunk.
-    extrap_method : str, optional
-        Extrapolation method.
-    extrap_dist_exponent : float
-        Exponent for IDW extrapolation.
-    mask_var : str, optional
-        Name of the mask variable in source grid.
-    periodic : bool, default False
-        Whether the source grid is periodic.
-
-    Returns
-    -------
-    rows : np.ndarray
-        Global destination indices.
-    cols : np.ndarray
-        Global source indices.
-    weights : np.ndarray
-        Regridding weights.
-    error : str or None
-        Error message if any, else None.
     """
     try:
+        import dask.distributed
         import esmpy
 
         # Initialize Manager if not already done in this process
@@ -369,14 +261,11 @@ def _compute_chunk_weights(
             "unmapped_action": esmpy.UnmappedAction.IGNORE,
             "factors": True,
         }
-        if extrap_method and extrap_method != "none":
+        if extrap_method:
             regrid_kwargs["extrap_method"] = extrap_method_map[extrap_method]
             regrid_kwargs["extrap_dist_exponent"] = extrap_dist_exponent
 
-        # Check if we should apply a mask.
-        # LocStream doesn't support mask values in this way.
-        is_grid = hasattr(src_field.grid, "staggerloc")
-        if is_grid and mask_var:
+        if isinstance(src_field.grid, esmpy.Grid) and mask_var:
             regrid_kwargs["src_mask_values"] = np.array([0], dtype=np.int32)
 
         # 4. Generate weights
@@ -391,13 +280,8 @@ def _compute_chunk_weights(
 
     except Exception as e:
         import traceback
-
-        return (
-            np.array([]),
-            np.array([]),
-            np.array([]),
-            f"{str(e)}\n{traceback.format_exc()}",
-        )
+        return (np.array([]), np.array([]), np.array([]),
+                f"{str(e)}\n{traceback.format_exc()}")
 
 
 class Regridder:
@@ -639,10 +523,8 @@ class Regridder:
             self._is_unstructured_tgt = is_unstructured
 
         return _create_esmf_grid(
-            ds,
-            self.method,
-            periodic=self.periodic if is_source else False,
-            mask_var=self.mask_var if is_source else None,
+            ds, self.method, periodic=self.periodic if is_source else False,
+            mask_var=self.mask_var if is_source else None
         )
 
     def _generate_weights(self) -> None:
@@ -837,7 +719,8 @@ class Regridder:
 
                 # Extract global indices for this chunk
                 chunk_global_indices = global_indices[
-                    idx0[0] : idx0[-1] + 1, idx1[0] : idx1[-1] + 1
+                    idx0[0]:idx0[-1]+1,
+                    idx1[0]:idx1[-1]+1
                 ].flatten()
 
                 future = client.submit(
@@ -956,7 +839,6 @@ class Regridder:
                 "is_unstructured_tgt": int(self._is_unstructured_tgt),
                 "method": self.method,
                 "periodic": int(self.periodic),
-                "parallel": int(self.parallel),
                 "extrap_method": self.extrap_method or "none",
                 "extrap_dist_exponent": self.extrap_dist_exponent,
                 "generation_time": self.generation_time
@@ -1015,8 +897,7 @@ class Regridder:
             f"Regridder(method={self.method}, "
             f"src_shape={self._shape_source}, "
             f"dst_shape={self._shape_target}, "
-            f"periodic={self.periodic}, "
-            f"parallel={self.parallel})"
+            f"periodic={self.periodic})"
         )
 
     def __call__(
@@ -1063,48 +944,46 @@ class Regridder:
         xarray.DataArray
             The regridded DataArray.
         """
-        # Capture needed variables to avoid serializing 'self' (Aero Protocol)
-        # ESMF Manager in 'self' is not serializable.
-        weights_matrix = self._weights_matrix
-        total_weights = self._total_weights
-        skipna = self.skipna
-        na_thres = self.na_thres
-        dims_source = self._dims_source
-        shape_target = self._shape_target
 
         def _apply_weights(data_block: np.ndarray) -> np.ndarray:
             """Internal function to apply weight matrix to a data block."""
             original_shape = data_block.shape
             # Core dimensions are at the end
-            spatial_shape = original_shape[len(original_shape) - len(dims_source) :]
-            other_dims_shape = original_shape[: len(original_shape) - len(dims_source)]
+            spatial_shape = original_shape[
+                len(original_shape) - len(self._dims_source) :
+            ]
+            other_dims_shape = original_shape[
+                : len(original_shape) - len(self._dims_source)
+            ]
             n_spatial = int(np.prod(spatial_shape))
             n_other = int(np.prod(other_dims_shape))
             flat_data = data_block.reshape(n_other, n_spatial)
 
-            if skipna:
+            if self.skipna:
                 mask = np.isnan(flat_data)
                 has_nans = np.any(mask)
 
                 if not has_nans:
                     # Fast path: No NaNs in this data block
-                    result = (weights_matrix @ flat_data.T).T
-                    if total_weights is not None:
+                    result = (self._weights_matrix @ flat_data.T).T
+                    if self._total_weights is not None:
                         with np.errstate(divide="ignore", invalid="ignore"):
-                            result = result / total_weights
+                            result = result / self._total_weights
                 else:
                     # Slow path: Handle NaNs by re-normalizing weights
                     safe_data = np.where(mask, 0.0, flat_data)
                     # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
-                    result = (weights_matrix @ safe_data.T).T
+                    result = (self._weights_matrix @ safe_data.T).T
                     # Sum weights of valid (non-NaN) points
-                    weights_sum = (weights_matrix @ (~mask).astype(np.float32).T).T
+                    weights_sum = (
+                        self._weights_matrix @ (~mask).astype(np.float32).T
+                    ).T
                     with np.errstate(divide="ignore", invalid="ignore"):
                         final_result = result / weights_sum
-                        if total_weights is not None:
-                            fraction_valid = weights_sum / total_weights
+                        if self._total_weights is not None:
+                            fraction_valid = weights_sum / self._total_weights
                             final_result = np.where(
-                                fraction_valid >= (1.0 - na_thres - 1e-6),
+                                fraction_valid >= (1.0 - self.na_thres - 1e-6),
                                 final_result,
                                 np.nan,
                             )
@@ -1112,9 +991,9 @@ class Regridder:
             else:
                 # Standard path (skipna=False): Just apply weights
                 # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
-                result = (weights_matrix @ flat_data.T).T
+                result = (self._weights_matrix @ flat_data.T).T
 
-            new_shape = other_dims_shape + shape_target
+            new_shape = other_dims_shape + self._shape_target
             return result.reshape(new_shape)
 
         input_core_dims = list(self._dims_source)

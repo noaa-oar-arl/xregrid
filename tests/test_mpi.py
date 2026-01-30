@@ -15,7 +15,6 @@ def test_mpi_initialization():
 
     with patch("esmpy.Manager") as mock_manager:
         # We need to make sure LogKind is available in the mock if esmpy is mocked
-        import esmpy
 
         _ = Regridder(source_grid, target_grid, mpi=True)
         mock_manager.assert_called_with(debug=False)
