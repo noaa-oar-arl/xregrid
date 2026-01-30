@@ -173,13 +173,6 @@ def _create_esmf_grid(
             pole_dim=pole_dim,
         )
 
-        grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lon_f.astype(
-            np.float64
-        )
-        grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lat_f.astype(
-            np.float64
-        )
-
         if has_bounds:
             if lon_b.ndim == 1 and lat_b.ndim == 1:
                 lon_b_vals, lat_b_vals = np.meshgrid(lon_b, lat_b)
@@ -193,18 +186,38 @@ def _create_esmf_grid(
                 lon_b_vals_f = lon_b_vals_f[:-1, :]
                 lat_b_vals_f = lat_b_vals_f[:-1, :]
 
-            grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CORNER)[...] = (
-                lon_b_vals_f.astype(np.float64)
-            )
-            grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CORNER)[...] = (
-                lat_b_vals_f.astype(np.float64)
-            )
+        # Fill Center Coords
+        lb_c = np.array(grid.lower_bounds[esmpy.StaggerLoc.CENTER])
+        ub_c = np.array(grid.upper_bounds[esmpy.StaggerLoc.CENTER])
+
+        grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lon_f[
+            lb_c[0] : ub_c[0], lb_c[1] : ub_c[1]
+        ].astype(np.float64)
+        grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lat_f[
+            lb_c[0] : ub_c[0], lb_c[1] : ub_c[1]
+        ].astype(np.float64)
+
+        if has_bounds:
+            # Fill Corner Coords
+            lb_rn = np.array(grid.lower_bounds[esmpy.StaggerLoc.CORNER])
+            ub_rn = np.array(grid.upper_bounds[esmpy.StaggerLoc.CORNER])
+
+            grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CORNER)[...] = lon_b_vals_f[
+                lb_rn[0] : ub_rn[0], lb_rn[1] : ub_rn[1]
+            ].astype(np.float64)
+            grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CORNER)[...] = lat_b_vals_f[
+                lb_rn[0] : ub_rn[0], lb_rn[1] : ub_rn[1]
+            ].astype(np.float64)
 
         if mask_var and mask_var in ds:
             grid.add_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)
-            grid.get_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)[
-                ...
-            ] = ds[mask_var].values.T.astype(np.int32)
+            mask_ptr = grid.get_item(
+                esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER
+            )
+            mask_f = ds[mask_var].values.T
+            mask_ptr[...] = mask_f[
+                lb_c[0] : ub_c[0], lb_c[1] : ub_c[1]
+            ].astype(np.int32)
         return grid
 
 
