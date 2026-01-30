@@ -16,8 +16,277 @@ except ImportError:
 
 from .utils import update_history
 
+
 if TYPE_CHECKING:
     pass
+
+
+# Global cache for workers to reuse ESMF source objects
+_WORKER_CACHE: dict = {}
+
+
+def _get_mesh_info(
+    ds: xr.Dataset,
+) -> Tuple[xr.DataArray, xr.DataArray, Tuple[int, ...], Tuple[str, ...], bool]:
+    """Detect grid type and extract coordinates and shape."""
+    try:
+        lat = ds.cf["latitude"]
+        lon = ds.cf["longitude"]
+    except (KeyError, AttributeError):
+        if "lat" in ds and "lon" in ds:
+            lat = ds["lat"]
+            lon = ds["lon"]
+        else:
+            raise KeyError(
+                "Could not find latitude/longitude coordinates. "
+                "Ensure they are named 'lat'/'lon' or have CF attributes."
+            )
+
+    if lat.ndim == 2:
+        # Curvilinear
+        if lon.ndim == 2 and lon.dims != lat.dims and set(lon.dims) == set(lat.dims):
+            lon = lon.transpose(*lat.dims)
+        return lon, lat, lat.shape, lat.dims, False
+    elif lat.ndim == 1:
+        if lat.dims == lon.dims:
+            # Unstructured (e.g. MPAS)
+            return lon, lat, lat.shape, lat.dims, True
+        else:
+            # Rectilinear
+            lon_mesh, lat_mesh = xr.broadcast(lon, lat)
+
+            # Ensure they have the correct order (lat, lon) for the shape
+            if lat.ndim == 2 and lon.ndim == 2:
+                if lat.dims != lon.dims and set(lat.dims) == set(lon.dims):
+                    lon = lon.transpose(*lat.dims)
+
+            lon_mesh = lon_mesh.transpose(lat.dims[0], lon.dims[0])
+            lat_mesh = lat_mesh.transpose(lat.dims[0], lon.dims[0])
+
+            return (
+                lon_mesh,
+                lat_mesh,
+                (lat.size, lon.size),
+                (lat.dims[0], lon.dims[0]),
+                False,
+            )
+    else:
+        raise ValueError("Latitude and longitude must be 1D or 2D.")
+
+
+def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
+    """Convert bounds to vertices for ESMF."""
+    if b.ndim == 2 and b.shape[-1] == 2:
+        return np.concatenate([b.values[:, 0], b.values[-1:, 1]])
+    elif b.ndim == 3 and b.shape[-1] == 4:
+        y_size, x_size, _ = b.shape
+        vals = b.values
+        res = np.empty((y_size + 1, x_size + 1))
+        res[:-1, :-1] = vals[:, :, 0]
+        res[:-1, -1] = vals[:, -1, 1]
+        res[-1, -1] = vals[-1, -1, 2]
+        res[-1, :-1] = vals[-1, :, 3]
+        return res
+    return b.values
+
+
+def _get_grid_bounds(
+    ds: xr.Dataset,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Extract grid cell boundaries from a dataset."""
+    try:
+        lat_b_da = ds.cf.get_bounds("latitude")
+        lon_b_da = ds.cf.get_bounds("longitude")
+        return _bounds_to_vertices(lat_b_da), _bounds_to_vertices(lon_b_da)
+    except (KeyError, AttributeError, ValueError):
+        if "lat_b" in ds and "lon_b" in ds:
+            lat_b = (
+                ds["lat_b"].values if hasattr(ds["lat_b"], "values") else ds["lat_b"]
+            )
+            lon_b = (
+                ds["lon_b"].values if hasattr(ds["lon_b"], "values") else ds["lon_b"]
+            )
+            return lat_b, lon_b
+    return None, None
+
+
+def _create_esmf_grid(
+    ds: xr.Dataset,
+    method: str,
+    periodic: bool = False,
+    mask_var: Optional[str] = None,
+) -> Union[esmpy.Grid, esmpy.LocStream]:
+    """Creates an ESMF Grid or LocStream."""
+    import esmpy
+
+    lon, lat, shape, dims, is_unstructured = _get_mesh_info(ds)
+
+    if is_unstructured:
+        if method not in ["nearest_s2d", "nearest_d2s"]:
+            raise NotImplementedError(
+                f"Method '{method}' is not yet supported for unstructured grids."
+            )
+        locstream = esmpy.LocStream(shape[0], coord_sys=esmpy.CoordSys.SPH_DEG)
+        locstream["ESMF:Lon"] = lon.values.astype(np.float64)
+        locstream["ESMF:Lat"] = lat.values.astype(np.float64)
+        return locstream
+    else:
+        lon_f = lon.values.T
+        lat_f = lat.values.T
+        shape_f = lon_f.shape
+
+        num_peri_dims = 1 if periodic else None
+        periodic_dim = 0 if periodic else None
+        pole_dim = 1 if periodic else None
+
+        lat_b, lon_b = _get_grid_bounds(ds)
+
+        if (lat_b is None or lon_b is None) and method == "conservative":
+            try:
+                ds_with_bounds = ds.cf.add_bounds(["latitude", "longitude"])
+                lat_b, lon_b = _get_grid_bounds(ds_with_bounds)
+                if lat_b is not None and lon_b is not None:
+                    update_history(
+                        ds,
+                        f"Automatically generated cell boundaries for {method} regridding.",
+                    )
+            except Exception:
+                pass
+
+        has_bounds = lat_b is not None and lon_b is not None
+        if method == "conservative" and not has_bounds:
+            raise ValueError(
+                "Conservative regridding requires cell boundaries (bounds). "
+                "Ensure your dataset has 'lat_b' and 'lon_b' or CF-compliant bounds."
+            )
+
+        staggerlocs = [esmpy.StaggerLoc.CENTER]
+        if has_bounds:
+            staggerlocs.append(esmpy.StaggerLoc.CORNER)
+
+        grid = esmpy.Grid(
+            np.array(shape_f),
+            staggerloc=staggerlocs,
+            coord_sys=esmpy.CoordSys.SPH_DEG,
+            num_peri_dims=num_peri_dims,
+            periodic_dim=periodic_dim,
+            pole_dim=pole_dim,
+        )
+
+        grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lon_f.astype(
+            np.float64
+        )
+        grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CENTER)[...] = lat_f.astype(
+            np.float64
+        )
+
+        if has_bounds:
+            if lon_b.ndim == 1 and lat_b.ndim == 1:
+                lon_b_vals, lat_b_vals = np.meshgrid(lon_b, lat_b)
+            else:
+                lon_b_vals, lat_b_vals = lon_b, lat_b
+
+            lon_b_vals_f = lon_b_vals.T
+            lat_b_vals_f = lat_b_vals.T
+
+            if periodic:
+                lon_b_vals_f = lon_b_vals_f[:-1, :]
+                lat_b_vals_f = lat_b_vals_f[:-1, :]
+
+            grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CORNER)[...] = (
+                lon_b_vals_f.astype(np.float64)
+            )
+            grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CORNER)[...] = (
+                lat_b_vals_f.astype(np.float64)
+            )
+
+        if mask_var and mask_var in ds:
+            grid.add_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)
+            grid.get_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)[
+                ...
+            ] = ds[mask_var].values.T.astype(np.int32)
+        return grid
+
+
+def _compute_chunk_weights(
+    source_ds: xr.Dataset,
+    chunk_ds: xr.Dataset,
+    method: str,
+    global_indices: np.ndarray,
+    extrap_method: Optional[str] = None,
+    extrap_dist_exponent: float = 2.0,
+    mask_var: Optional[str] = None,
+    periodic: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[str]]:
+    """
+    Worker function to compute weights for a specific chunk of the target grid.
+    Uses worker-local caching for source ESMF objects.
+    """
+    try:
+        import esmpy
+
+        # Initialize Manager if not already done in this process
+        esmpy.Manager(debug=False)
+
+        # 1. Get or create source ESMF Field
+        # We use id(source_ds) as a key. Dask ensures the same object is reused on a worker.
+        src_cache_key = (id(source_ds), method, periodic, mask_var)
+        if src_cache_key in _WORKER_CACHE:
+            src_field = _WORKER_CACHE[src_cache_key]
+        else:
+            src_obj = _create_esmf_grid(source_ds, method, periodic, mask_var)
+            src_field = esmpy.Field(src_obj, name="src")
+            _WORKER_CACHE[src_cache_key] = src_field
+
+        # 2. Create target ESMF object (chunk is small, no need to cache)
+        dst_obj = _create_esmf_grid(chunk_ds, method, periodic=False, mask_var=None)
+        dst_field = esmpy.Field(dst_obj, name="dst")
+
+        # 3. Setup regridding parameters
+        method_map = {
+            "bilinear": esmpy.RegridMethod.BILINEAR,
+            "conservative": esmpy.RegridMethod.CONSERVE,
+            "nearest_s2d": esmpy.RegridMethod.NEAREST_STOD,
+            "nearest_d2s": esmpy.RegridMethod.NEAREST_DTOS,
+            "patch": esmpy.RegridMethod.PATCH,
+        }
+        extrap_method_map = {
+            "nearest_s2d": esmpy.ExtrapMethod.NEAREST_STOD,
+            "nearest_idw": esmpy.ExtrapMethod.NEAREST_IDAVG,
+            "creep_fill": esmpy.ExtrapMethod.CREEP_FILL,
+        }
+
+        regrid_kwargs = {
+            "regrid_method": method_map[method],
+            "unmapped_action": esmpy.UnmappedAction.IGNORE,
+            "factors": True,
+        }
+        if extrap_method:
+            regrid_kwargs["extrap_method"] = extrap_method_map[extrap_method]
+            regrid_kwargs["extrap_dist_exponent"] = extrap_dist_exponent
+
+        if isinstance(src_field.grid, esmpy.Grid) and mask_var:
+            regrid_kwargs["src_mask_values"] = np.array([0], dtype=np.int32)
+
+        # 4. Generate weights
+        regrid = esmpy.Regrid(src_field, dst_field, **regrid_kwargs)
+        weights = regrid.get_weights_dict(deep_copy=True)
+
+        rows = global_indices[weights["row_dst"] - 1]
+        cols = weights["col_src"] - 1
+        data = weights["weights"]
+
+        return rows, cols, data, None
+
+    except Exception as e:
+        import traceback
+
+        return (
+            np.array([]),
+            np.array([]),
+            np.array([]),
+            f"{str(e)}\n{traceback.format_exc()}",
+        )
 
 
 class Regridder:
@@ -59,6 +328,8 @@ class Regridder:
         na_thres: float = 1.0,
         periodic: bool = False,
         mpi: bool = False,
+        parallel: bool = False,
+        compute: bool = True,
         extrap_method: Optional[str] = None,
         extrap_dist_exponent: float = 2.0,
     ) -> None:
@@ -88,6 +359,14 @@ class Regridder:
         mpi : bool, default False
             Whether to use MPI for parallel weight generation.
             Requires running with mpirun and having mpi4py installed for gathering.
+        parallel : bool, default False
+            Whether to use Dask for parallel weight generation.
+            Requires 'dask' and 'distributed' installed.
+            Cannot be True if mpi=True.
+        compute : bool, default True
+            If True, compute weights immediately when parallel=True.
+            If False, submitting tasks but delaying gathering until .compute() is called.
+            Only relevant if parallel=True.
         extrap_method : str, optional
             Extrapolation method (nearest_s2d, nearest_idw, creep_fill).
         extrap_dist_exponent : float, default 2.0
@@ -98,6 +377,20 @@ class Regridder:
                 "ESMPy is required for Regridder. "
                 "Please install it via conda: `conda install -c conda-forge esmpy`"
             )
+
+        if mpi and parallel:
+            raise ValueError(
+                "Cannot use both MPI and Dask (parallel=True) simultaneously."
+            )
+
+        if parallel:
+            import importlib.util
+
+            if importlib.util.find_spec("dask.distributed") is None:
+                raise ImportError(
+                    "Dask distributed is required for parallel=True. "
+                    "Please install it via `pip install dask distributed`."
+                )
 
         # Initialize ESMF Manager (required for some environments)
         if mpi:
@@ -113,6 +406,8 @@ class Regridder:
         self.skipna = skipna
         self.na_thres = na_thres
         self.periodic = periodic
+        self.parallel = parallel
+        self.compute_on_init = compute
         self.extrap_method = extrap_method
         self.extrap_dist_exponent = extrap_dist_exponent
 
@@ -143,6 +438,9 @@ class Regridder:
         self._loaded_periodic: Optional[bool] = None
         self._loaded_extrap: Optional[str] = None
         self.generation_time: Optional[float] = None
+        self._dask_futures: Optional[list] = None
+        self._dask_client: Optional[Any] = None
+        self._dask_start_time: Optional[float] = None
 
         if reuse_weights and os.path.exists(filename):
             self._load_weights()
@@ -199,165 +497,24 @@ class Regridder:
     def _get_mesh_info(
         self, ds: xr.Dataset
     ) -> Tuple[xr.DataArray, xr.DataArray, Tuple[int, ...], Tuple[str, ...], bool]:
-        """
-        Detect grid type and extract coordinates and shape.
-
-        Uses cf-xarray for automatic coordinate detection if standard
-        names 'lat' and 'lon' are not present.
-
-        Parameters
-        ----------
-        ds : xarray.Dataset
-            The dataset to extract mesh info from.
-
-        Returns
-        -------
-        lon : xarray.DataArray
-            Longitude coordinate.
-        lat : xarray.DataArray
-            Latitude coordinate.
-        shape : tuple of int
-            Grid shape.
-        dims : tuple of str
-            Coordinate dimensions.
-        is_unstructured : bool
-            Whether the grid is unstructured.
-        """
-        try:
-            lat = ds.cf["latitude"]
-            lon = ds.cf["longitude"]
-        except (KeyError, AttributeError):
-            if "lat" in ds and "lon" in ds:
-                lat = ds["lat"]
-                lon = ds["lon"]
-            else:
-                raise KeyError(
-                    "Could not find latitude/longitude coordinates. "
-                    "Ensure they are named 'lat'/'lon' or have CF attributes."
-                )
-
-        if lat.ndim == 2:
-            # Curvilinear
-            if lon.ndim == 2 and lon.dims != lat.dims and set(lon.dims) == set(lat.dims):
-                 lon = lon.transpose(*lat.dims)
-            return lon, lat, lat.shape, lat.dims, False
-        elif lat.ndim == 1:
-            if lat.dims == lon.dims:
-                # Unstructured (e.g. MPAS)
-                return lon, lat, lat.shape, lat.dims, True
-            else:
-                # Rectilinear
-                lon_mesh, lat_mesh = xr.broadcast(lon, lat)
-
-                # Ensure they have the correct order (lat, lon) for the shape
-                # Check if lon needs transpose to match lat's dimension order if both are 2D
-                if lat.ndim == 2 and lon.ndim == 2:
-                     if lat.dims != lon.dims and set(lat.dims) == set(lon.dims):
-                          lon = lon.transpose(*lat.dims)
-
-                lon_mesh = lon_mesh.transpose(lat.dims[0], lon.dims[0])
-                lat_mesh = lat_mesh.transpose(lat.dims[0], lon.dims[0])
-
-                return (
-                    lon_mesh,
-                    lat_mesh,
-                    (lat.size, lon.size),
-                    (lat.dims[0], lon.dims[0]),
-                    False,
-                )
-        else:
-            raise ValueError("Latitude and longitude must be 1D or 2D.")
+        """Detect grid type and extract coordinates and shape."""
+        return _get_mesh_info(ds)
 
     def _bounds_to_vertices(self, b: xr.DataArray) -> np.ndarray:
-        """
-        Convert bounds to vertices for ESMF.
-
-        Handles 1D coordinates (N, 2) -> (N+1,) and 2D coordinates (Y, X, 4) -> (Y+1, X+1).
-
-        Parameters
-        ----------
-        b : xarray.DataArray
-            The bounds data array.
-
-        Returns
-        -------
-        np.ndarray
-            The vertex array.
-        """
-        if b.ndim == 2 and b.shape[-1] == 2:
-            # 1D coordinates: (N, 2) -> (N+1,)
-            # This assumes the bounds are contiguous
-            return np.concatenate([b.values[:, 0], b.values[-1:, 1]])
-        elif b.ndim == 3 and b.shape[-1] == 4:
-            # 2D coordinates: (Y, X, 4) -> (Y+1, X+1)
-            # Corners are ordered: 0=(y, x), 1=(y, x+1), 2=(y+1, x+1), 3=(y+1, x)
-            y_size, x_size, _ = b.shape
-            vals = b.values
-            res = np.empty((y_size + 1, x_size + 1))
-            res[:-1, :-1] = vals[:, :, 0]
-            res[:-1, -1] = vals[:, -1, 1]
-            res[-1, -1] = vals[-1, -1, 2]
-            res[-1, :-1] = vals[-1, :, 3]
-            return res
-        return b.values
+        """Convert bounds to vertices for ESMF."""
+        return _bounds_to_vertices(b)
 
     def _get_grid_bounds(
         self, ds: xr.Dataset
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        Extract grid cell boundaries from a dataset.
-
-        Parameters
-        ----------
-        ds : xr.Dataset
-            The dataset to extract bounds from.
-
-        Returns
-        -------
-        lat_b : np.ndarray or None
-            Latitude boundaries.
-        lon_b : np.ndarray or None
-            Longitude boundaries.
-        """
-        try:
-            lat_b_da = ds.cf.get_bounds("latitude")
-            lon_b_da = ds.cf.get_bounds("longitude")
-            return self._bounds_to_vertices(lat_b_da), self._bounds_to_vertices(
-                lon_b_da
-            )
-        except (KeyError, AttributeError, ValueError):
-            if "lat_b" in ds and "lon_b" in ds:
-                # Return as numpy if they are xarray objects
-                lat_b = (
-                    ds["lat_b"].values
-                    if hasattr(ds["lat_b"], "values")
-                    else ds["lat_b"]
-                )
-                lon_b = (
-                    ds["lon_b"].values
-                    if hasattr(ds["lon_b"], "values")
-                    else ds["lon_b"]
-                )
-                return lat_b, lon_b
-        return None, None
+        """Extract grid cell boundaries from a dataset."""
+        return _get_grid_bounds(ds)
 
     def _create_esmf_object(
         self, ds: xr.Dataset, is_source: bool = True
     ) -> Union[esmpy.Grid, esmpy.LocStream]:
         """
         Creates an ESMF Grid or LocStream.
-
-        Parameters
-        ----------
-        ds : xr.Dataset
-            The dataset to create ESMF object from.
-        is_source : bool, default True
-            Whether this is the source grid.
-
-        Returns
-        -------
-        Union[esmpy.Grid, esmpy.LocStream]
-            The ESMF object.
         """
         lon, lat, shape, dims, is_unstructured = self._get_mesh_info(ds)
 
@@ -370,105 +527,19 @@ class Regridder:
             self._dims_target = dims
             self._is_unstructured_tgt = is_unstructured
 
-        if is_unstructured:
-            if self.method not in ["nearest_s2d", "nearest_d2s"]:
-                raise NotImplementedError(
-                    f"Method '{self.method}' is not yet supported for unstructured grids. "
-                    "Currently only 'nearest_s2d' and 'nearest_d2s' are supported for "
-                    "unstructured grids via LocStream."
-                )
-
-            # ESMF requires numpy arrays for grid definition.
-            locstream = esmpy.LocStream(shape[0], coord_sys=esmpy.CoordSys.SPH_DEG)
-            locstream["ESMF:Lon"] = lon.values.astype(np.float64)
-            locstream["ESMF:Lat"] = lat.values.astype(np.float64)
-            return locstream
-        else:
-            # ESMF requires numpy arrays for grid definition.
-            # Transpose to (lon, lat) order for ESMF (SPH_DEG convention)
-            lon_f = lon.values.T
-            lat_f = lat.values.T
-            shape_f = lon_f.shape  # (nlon, nlat)
-
-            # Periodicity configuration
-            num_peri_dims = 1 if self.periodic else None
-            periodic_dim = 0 if self.periodic else None
-            pole_dim = 1 if self.periodic else None
-
-            # Attempt to find bounds
-            lat_b, lon_b = self._get_grid_bounds(ds)
-
-            if (lat_b is None or lon_b is None) and self.method == "conservative":
-                # Aero Protocol: Flexibility - Automatically try to generate bounds if missing
-                try:
-                    ds_with_bounds = ds.cf.add_bounds(["latitude", "longitude"])
-                    lat_b, lon_b = self._get_grid_bounds(ds_with_bounds)
-                    if lat_b is not None and lon_b is not None:
-                        update_history(
-                            ds,
-                            f"Automatically generated cell boundaries for {self.method} regridding.",
-                        )
-                except Exception:
-                    pass
-
-            has_bounds = lat_b is not None and lon_b is not None
-
-            if self.method == "conservative" and not has_bounds:
-                raise ValueError(
-                    f"Conservative regridding requires cell boundaries (bounds) for "
-                    f"{'source' if is_source else 'target'} grid. "
-                    "Ensure your dataset has 'lat_b' and 'lon_b' or CF-compliant bounds."
-                )
-
-            staggerlocs = [esmpy.StaggerLoc.CENTER]
-            if has_bounds:
-                staggerlocs.append(esmpy.StaggerLoc.CORNER)
-
-            grid = esmpy.Grid(
-                np.array(shape_f),
-                staggerloc=staggerlocs,
-                coord_sys=esmpy.CoordSys.SPH_DEG,
-                num_peri_dims=num_peri_dims,
-                periodic_dim=periodic_dim,
-                pole_dim=pole_dim,
-            )
-
-            grid_lon = grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CENTER)
-            grid_lat = grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CENTER)
-            grid_lon[...] = lon_f.astype(np.float64)
-            grid_lat[...] = lat_f.astype(np.float64)
-
-            if has_bounds:
-                if lon_b.ndim == 1 and lat_b.ndim == 1:
-                    lon_b_vals, lat_b_vals = np.meshgrid(lon_b, lat_b)
-                else:
-                    lon_b_vals, lat_b_vals = lon_b, lat_b
-
-                grid_lon_b = grid.get_coords(0, staggerloc=esmpy.StaggerLoc.CORNER)
-                grid_lat_b = grid.get_coords(1, staggerloc=esmpy.StaggerLoc.CORNER)
-
-                lon_b_vals_f = lon_b_vals.T
-                lat_b_vals_f = lat_b_vals.T
-
-                if self.periodic:
-                    # Remove the redundant corner in the periodic dimension
-                    lon_b_vals_f = lon_b_vals_f[:-1, :]
-                    lat_b_vals_f = lat_b_vals_f[:-1, :]
-
-                grid_lon_b[...] = lon_b_vals_f.astype(np.float64)
-                grid_lat_b[...] = lat_b_vals_f.astype(np.float64)
-
-            if is_source and self.mask_var and self.mask_var in ds:
-                grid.add_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)
-                mask_ptr = grid.get_item(
-                    esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER
-                )
-                mask_f = ds[self.mask_var].values.T
-                mask_ptr[...] = mask_f.astype(np.int32)
-            return grid
+        return _create_esmf_grid(
+            ds,
+            self.method,
+            periodic=self.periodic if is_source else False,
+            mask_var=self.mask_var if is_source else None,
+        )
 
     def _generate_weights(self) -> None:
         """Generate regridding weights using ESMPy."""
+        if self.parallel:
+            self._generate_weights_dask(compute=self.compute_on_init)
+            return
+
         start_time = time.perf_counter()
         src_obj = self._create_esmf_object(self.source_grid_ds, is_source=True)
         dst_obj = self._create_esmf_object(self.target_grid_ds, is_source=False)
@@ -563,6 +634,188 @@ class Regridder:
             self._total_weights = np.ones((1, n_src)) @ self._weights_matrix.T
 
         self.generation_time = time.perf_counter() - start_time
+
+    def _generate_weights_dask(self, compute: bool = True) -> None:
+        """Generate regridding weights using Dask parallel workers."""
+        import dask.distributed
+
+        self._dask_start_time = time.perf_counter()
+
+        # Get grid info and populate internal state
+        # Source
+        _, _, src_shape, src_dims, is_unstructured_src = self._get_mesh_info(
+            self.source_grid_ds
+        )
+        self._shape_source = src_shape
+        self._dims_source = src_dims
+        self._is_unstructured_src = is_unstructured_src
+
+        # Target
+        _, _, dst_shape, dst_dims, is_unstructured_dst = self._get_mesh_info(
+            self.target_grid_ds
+        )
+        self._shape_target = dst_shape
+        self._dims_target = dst_dims
+        self._is_unstructured_tgt = is_unstructured_dst
+
+        if is_unstructured_dst:
+            raise NotImplementedError(
+                "Dask parallelization not yet optimized/verified for unstructured target grids."
+            )
+
+        # Get client
+        try:
+            client = dask.distributed.get_client()
+        except ValueError:
+            # Create a local cluster if none exists
+            cluster = dask.distributed.LocalCluster()
+            client = dask.distributed.Client(cluster)
+
+        self._dask_client = client
+
+        # Split target grid along available spatial dimensions
+        dim0 = dst_dims[0]
+        dim1 = dst_dims[1] if len(dst_dims) > 1 else None
+
+        size0 = self.target_grid_ds.sizes[dim0]
+        size1 = self.target_grid_ds.sizes[dim1] if dim1 else 1
+
+        # Determine number of chunks. Use number of workers * 2 usually good heuristic
+        n_workers = len(client.scheduler_info()["workers"])
+        n_chunks_total = max(1, n_workers * 2)
+
+        if dim1 and n_chunks_total > 1:
+            # Try to make chunks approximately square-ish for 2D grids
+            n0 = int(np.sqrt(n_chunks_total * size0 / size1))
+            n0 = max(1, min(n0, size0))
+            n1 = max(1, n_chunks_total // n0)
+            n1 = max(1, min(n1, size1))
+        else:
+            n0 = min(n_chunks_total, size0)
+            n1 = 1
+
+        # Split indices
+        indices0 = np.array_split(np.arange(size0), n0)
+        indices1 = np.array_split(np.arange(size1), n1)
+
+        # Pre-compute global indices for the target grid to handle non-contiguous chunks
+        global_indices = np.arange(size0 * size1).reshape(size0, size1)
+
+        futures = []
+
+        # Scatter source grid info (minimal)
+        source_grid_only = self.source_grid_ds.copy(deep=False)
+        for var in list(source_grid_only.data_vars):
+            if var != self.mask_var:
+                source_grid_only = source_grid_only.drop_vars(var)
+        src_ds_future = client.scatter(source_grid_only, broadcast=True)
+
+        for idx0 in indices0:
+            if len(idx0) == 0:
+                continue
+            for idx1 in indices1:
+                if len(idx1) == 0:
+                    continue
+
+                # Slice target grid
+                sel_dict = {dim0: slice(idx0[0], idx0[-1] + 1)}
+                if dim1:
+                    sel_dict[dim1] = slice(idx1[0], idx1[-1] + 1)
+
+                chunk_ds = self.target_grid_ds.isel(sel_dict)
+
+                # Extract global indices for this chunk
+                chunk_global_indices = global_indices[
+                    idx0[0] : idx0[-1] + 1, idx1[0] : idx1[-1] + 1
+                ].flatten()
+
+                future = client.submit(
+                    _compute_chunk_weights,
+                    src_ds_future,
+                    chunk_ds,
+                    self.method,
+                    chunk_global_indices,
+                    self.extrap_method,
+                    self.extrap_dist_exponent,
+                    self.mask_var,
+                    self.periodic,
+                )
+                futures.append(future)
+
+        self._dask_futures = futures
+
+        if compute:
+            self.compute()
+
+    def persist(self) -> "Regridder":
+        """
+        Ensure tasks are submitted to the cluster.
+
+        Since this implementation uses eager task submission (Futures),
+        the tasks are already running or pending on the cluster.
+        This method returns self for API consistency with Dask.
+
+        Returns
+        -------
+        Regridder
+            The regridder instance (self).
+        """
+        if not self.parallel:
+            return self
+
+        # If we later switch to dask.delayed, this would trigger client.compute(delayed_objs)
+        if self._dask_futures is None and self._weights_matrix is None:
+            # This arguably shouldn't happen in current logic unless something failed
+            pass
+
+        return self
+
+    def compute(self) -> None:
+        """
+        Trigger computation of weights if using Dask and not yet computed.
+        """
+        if not self.parallel or self._weights_matrix is not None:
+            return
+
+        if not self._dask_futures:
+            # This means compute=False was not used, or something went wrong?
+            # Or maybe parallel=True but _generate_weights_dask wasn't called yet?
+            # But __init__ calls _generate_weights.
+            return
+
+        # Gather results
+        results = self._dask_client.gather(self._dask_futures)
+
+        all_rows = []
+        all_cols = []
+        all_data = []
+
+        for i, (r, c, d, err) in enumerate(results):
+            if err:
+                raise RuntimeError(f"Dask worker {i} failed: {err}")
+            all_rows.append(r)
+            all_cols.append(c)
+            all_data.append(d)
+
+        full_rows = np.concatenate(all_rows)
+        full_cols = np.concatenate(all_cols)
+        full_data = np.concatenate(all_data)
+
+        n_src = int(np.prod(self._shape_source))
+        n_dst = int(np.prod(self._shape_target))
+
+        self._weights_matrix = coo_matrix(
+            (full_data, (full_rows, full_cols)), shape=(n_dst, n_src)
+        ).tocsr()
+
+        if self.skipna:
+            self._total_weights = np.ones((1, n_src)) @ self._weights_matrix.T
+
+        if self._dask_start_time:
+            self.generation_time = time.perf_counter() - self._dask_start_time
+
+        # Clear futures to free memory
+        self._dask_futures = None
 
     def _save_weights(self) -> None:
         """Save weights to a NetCDF file."""
@@ -669,6 +922,9 @@ class Regridder:
         xarray.DataArray or xarray.Dataset
             The regridded data.
         """
+        if self.parallel and self._weights_matrix is None:
+            self.compute()
+
         if isinstance(obj, xr.Dataset):
             return self._regrid_dataset(obj)
         elif isinstance(obj, xr.DataArray):

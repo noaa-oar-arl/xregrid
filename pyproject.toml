@@ -25,6 +25,7 @@ test = [
     "pytest-benchmark",
     "pytest-mock",
     "pooch",
+    "pre-commit",
 ]
 viz = [
     "matplotlib",
