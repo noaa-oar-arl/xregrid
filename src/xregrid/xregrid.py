@@ -289,6 +289,85 @@ def _compute_chunk_weights(
         )
 
 
+def _apply_weights_core(
+    data_block: np.ndarray,
+    weights_matrix: Any,
+    dims_source: Tuple[str, ...],
+    shape_target: Tuple[int, ...],
+    skipna: bool = False,
+    total_weights: Optional[np.ndarray] = None,
+    na_thres: float = 1.0,
+) -> np.ndarray:
+    """
+    Apply regridding weights to a data block (NumPy array).
+
+    Parameters
+    ----------
+    data_block : np.ndarray
+        The input data block. Core dimensions must be at the end.
+    weights_matrix : scipy.sparse.csr_matrix
+        The sparse weight matrix.
+    dims_source : tuple of str
+        The names of the source spatial dimensions.
+    shape_target : tuple of int
+        The shape of the target spatial grid.
+    skipna : bool, default False
+        Whether to handle NaNs by re-normalizing weights.
+    total_weights : np.ndarray, optional
+        Pre-computed sum of weights for each destination cell.
+    na_thres : float, default 1.0
+        Threshold for NaN handling.
+
+    Returns
+    -------
+    np.ndarray
+        The regridded data block.
+    """
+    original_shape = data_block.shape
+    # Core dimensions are at the end
+    n_source_dims = len(dims_source)
+    spatial_shape = original_shape[len(original_shape) - n_source_dims :]
+    other_dims_shape = original_shape[: len(original_shape) - n_source_dims]
+    n_spatial = int(np.prod(spatial_shape))
+    n_other = int(np.prod(other_dims_shape))
+    flat_data = data_block.reshape(n_other, n_spatial)
+
+    if skipna:
+        mask = np.isnan(flat_data)
+        has_nans = np.any(mask)
+
+        if not has_nans:
+            # Fast path: No NaNs in this data block
+            # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
+            result = (weights_matrix @ flat_data.T).T
+            if total_weights is not None:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    result = result / total_weights
+        else:
+            # Slow path: Handle NaNs by re-normalizing weights
+            safe_data = np.where(mask, 0.0, flat_data)
+            result = (weights_matrix @ safe_data.T).T
+            # Sum weights of valid (non-NaN) points
+            weights_sum = (weights_matrix @ (~mask).astype(np.float32).T).T
+            with np.errstate(divide="ignore", invalid="ignore"):
+                final_result = result / weights_sum
+                if total_weights is not None:
+                    fraction_valid = weights_sum / total_weights
+                    final_result = np.where(
+                        fraction_valid >= (1.0 - na_thres - 1e-6),
+                        final_result,
+                        np.nan,
+                    )
+            result = final_result
+    else:
+        # Standard path (skipna=False): Just apply weights
+        # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
+        result = (weights_matrix @ flat_data.T).T
+
+    new_shape = other_dims_shape + shape_target
+    return result.reshape(new_shape)
+
+
 class Regridder:
     """
     Optimized ESMF-based regridder for xarray DataArrays and Datasets.
@@ -394,7 +473,8 @@ class Regridder:
 
         # Initialize ESMF Manager (required for some environments)
         if mpi:
-            self._manager = esmpy.Manager(debug=False)
+            # Use MULTI logkind for MPI parallelization (Aero Protocol)
+            self._manager = esmpy.Manager(logkind=esmpy.LogKind.MULTI, debug=False)
         else:
             self._manager = esmpy.Manager(debug=False)
 
@@ -951,66 +1031,23 @@ class Regridder:
             The regridded DataArray.
         """
 
-        def _apply_weights(data_block: np.ndarray) -> np.ndarray:
-            """Internal function to apply weight matrix to a data block."""
-            original_shape = data_block.shape
-            # Core dimensions are at the end
-            spatial_shape = original_shape[
-                len(original_shape) - len(self._dims_source) :
-            ]
-            other_dims_shape = original_shape[
-                : len(original_shape) - len(self._dims_source)
-            ]
-            n_spatial = int(np.prod(spatial_shape))
-            n_other = int(np.prod(other_dims_shape))
-            flat_data = data_block.reshape(n_other, n_spatial)
-
-            if self.skipna:
-                mask = np.isnan(flat_data)
-                has_nans = np.any(mask)
-
-                if not has_nans:
-                    # Fast path: No NaNs in this data block
-                    result = (self._weights_matrix @ flat_data.T).T
-                    if self._total_weights is not None:
-                        with np.errstate(divide="ignore", invalid="ignore"):
-                            result = result / self._total_weights
-                else:
-                    # Slow path: Handle NaNs by re-normalizing weights
-                    safe_data = np.where(mask, 0.0, flat_data)
-                    # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
-                    result = (self._weights_matrix @ safe_data.T).T
-                    # Sum weights of valid (non-NaN) points
-                    weights_sum = (
-                        self._weights_matrix @ (~mask).astype(np.float32).T
-                    ).T
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        final_result = result / weights_sum
-                        if self._total_weights is not None:
-                            fraction_valid = weights_sum / self._total_weights
-                            final_result = np.where(
-                                fraction_valid >= (1.0 - self.na_thres - 1e-6),
-                                final_result,
-                                np.nan,
-                            )
-                    result = final_result
-            else:
-                # Standard path (skipna=False): Just apply weights
-                # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
-                result = (self._weights_matrix @ flat_data.T).T
-
-            new_shape = other_dims_shape + self._shape_target
-            return result.reshape(new_shape)
-
         input_core_dims = list(self._dims_source)
         temp_output_core_dims = [f"{d}_regridded" for d in self._dims_target]
 
         # Use allow_rechunk=True to support chunked core dimensions
         # and move output_sizes to dask_gufunc_kwargs for future compatibility
-        # vectorize=False because _apply_weights handles non-core dimensions
+        # vectorize=False because _apply_weights_core handles non-core dimensions
         out = xr.apply_ufunc(
-            _apply_weights,
+            _apply_weights_core,
             da_in,
+            kwargs={
+                "weights_matrix": self._weights_matrix,
+                "dims_source": self._dims_source,
+                "shape_target": self._shape_target,
+                "skipna": self.skipna,
+                "total_weights": self._total_weights,
+                "na_thres": self.na_thres,
+            },
             input_core_dims=[input_core_dims],
             output_core_dims=[temp_output_core_dims],
             dask="parallelized",

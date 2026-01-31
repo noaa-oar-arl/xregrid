@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import Any, Optional
 
 import xarray as xr
@@ -110,66 +111,90 @@ def plot_static(
     if transform is None:
         transform = ccrs.PlateCarree()
 
-    if "ax" in kwargs:
-        ax = kwargs.pop("ax")
-        # Ensure the existing axes is a GeoAxes if we are using cartopy
-        is_geoaxes = False
-        try:
-            import cartopy.mpl.geoaxes as geoaxes
+    # Handle axes and faceting
+    is_faceted = "col" in kwargs or "row" in kwargs
+    ax = kwargs.pop("ax", None)
 
-            is_geoaxes = isinstance(ax, geoaxes.GeoAxes)
-        except ImportError:
-            is_geoaxes = hasattr(ax, "projection")
-
-        if not is_geoaxes:
-            import warnings
-
+    if ax is not None:
+        if is_faceted:
             warnings.warn(
-                "The provided axes does not appear to be a Cartopy GeoAxes. "
-                "Geospatial plotting may not work as expected. "
-                "Ensure your axes was created with a projection (e.g., plt.axes(projection=...))."
+                "Providing an 'ax' with faceting ('col' or 'row') is not supported by xarray and will be ignored."
             )
-    else:
+            ax = None
+        else:
+            # Ensure the existing axes is a GeoAxes if we are using cartopy
+            is_geoaxes = False
+            try:
+                import cartopy.mpl.geoaxes as geoaxes
+
+                is_geoaxes = isinstance(ax, geoaxes.GeoAxes)
+            except ImportError:
+                is_geoaxes = hasattr(ax, "projection")
+
+            if not is_geoaxes:
+                warnings.warn(
+                    "The provided axes does not appear to be a Cartopy GeoAxes. "
+                    "Geospatial plotting may not work as expected. "
+                    "Ensure your axes was created with a projection (e.g., plt.axes(projection=...))."
+                )
+
+    if ax is None and not is_faceted:
         ax = plt.axes(projection=projection)
 
     # Enforce transform for geospatial accuracy (Aero Protocol)
     if "transform" not in kwargs:
         kwargs["transform"] = transform
 
+    if is_faceted and "subplot_kws" not in kwargs:
+        kwargs["subplot_kws"] = {"projection": projection}
+
     # Aero Protocol: No Ambiguous Plots.
-    # If ndim > 2 and no faceting is requested, select first slice.
-    if da.ndim > 2 and "col" not in kwargs and "row" not in kwargs:
-        import warnings
+    # Identify spatial and faceting dimensions to slice away everything else.
 
-        # Identify spatial dimensions using cf-xarray for robust slicing
-        try:
-            # We look for dimensions associated with latitude and longitude
-            lat_dims = da.cf["latitude"].dims
-            lon_dims = da.cf["longitude"].dims
-            spatial_dims = set(lat_dims) | set(lon_dims)
-        except (KeyError, AttributeError, ImportError):
-            # Fallback to assuming the last two dimensions are spatial
-            spatial_dims = set(da.dims[-2:])
+    # Identify spatial dimensions using cf-xarray for robust slicing
+    try:
+        # We look for dimensions associated with latitude and longitude
+        lat_dims = da.cf["latitude"].dims
+        lon_dims = da.cf["longitude"].dims
+        spatial_dims = set(lat_dims) | set(lon_dims)
+    except (KeyError, AttributeError, ImportError):
+        # Fallback to assuming the last two dimensions are spatial
+        spatial_dims = set(da.dims[-2:])
 
-        non_spatial_dims = [d for d in da.dims if d not in spatial_dims]
+    # Identify dimensions used for faceting
+    facet_dims = {kwargs.get("col"), kwargs.get("row")} - {None}
 
-        if non_spatial_dims:
-            first_slice = {d: 0 for d in non_spatial_dims}
-            warnings.warn(
-                f"DataArray has {da.ndim} dimensions. "
-                f"Automatically selecting the first slice along {list(first_slice.keys())}: {first_slice}. "
-                "To plot other slices, subset your data before calling plot_static or use 'col'/'row' for facets."
-            )
-            da = da.isel(first_slice)
+    # Dimensions that are neither spatial nor used for faceting
+    extra_dims = [d for d in da.dims if d not in spatial_dims and d not in facet_dims]
+
+    if extra_dims:
+        first_slice = {d: 0 for d in extra_dims}
+        warnings.warn(
+            f"DataArray has {da.ndim} dimensions, but only 2 spatial dimensions "
+            f"(plus optional faceting) are supported for static plots. "
+            f"Automatically selecting the first slice along {extra_dims}: {first_slice}. "
+            "To plot other slices, subset your data before calling plot_static."
+        )
+        da = da.isel(first_slice)
 
     im = da.plot(ax=ax, **kwargs)
 
-    if hasattr(ax, "coastlines"):
-        ax.coastlines()
+    if is_faceted:
+        # im is a FacetGrid
+        if hasattr(im, "axes"):
+            for a in im.axes.flat:
+                if hasattr(a, "coastlines"):
+                    a.coastlines()
+        if title:
+            plt.suptitle(title, y=1.02)
+    else:
+        # im is a QuadMesh or similar
+        if hasattr(ax, "coastlines"):
+            ax.coastlines()
 
-    if title is None:
-        title = da.name if da.name else "Static Map"
-    ax.set_title(title)
+        if title is None:
+            title = da.name if da.name else "Static Map"
+        ax.set_title(title)
 
     return im
 
