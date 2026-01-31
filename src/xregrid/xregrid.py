@@ -286,7 +286,7 @@ def _compute_chunk_weights(
     source_ds: xr.Dataset,
     chunk_ds: xr.Dataset,
     method: str,
-    global_indices: np.ndarray,
+    dest_slice_info: Union[np.ndarray, Tuple[int, int, int, int, int]],
     extrap_method: Optional[str] = None,
     extrap_dist_exponent: float = 2.0,
     mask_var: Optional[str] = None,
@@ -305,8 +305,9 @@ def _compute_chunk_weights(
         A chunk of the target grid dataset.
     method : str
         The regridding method.
-    global_indices : np.ndarray
-        Flat global indices for this chunk's destination pixels.
+    dest_slice_info : np.ndarray or tuple
+        If tuple, contains (i0_start, i0_end, i1_start, i1_end, total_size1) to
+        reconstruct global indices locally. If ndarray, used directly.
     extrap_method : str, optional
         The extrapolation method.
     extrap_dist_exponent : float, default 2.0
@@ -374,6 +375,19 @@ def _compute_chunk_weights(
         # 4. Generate weights
         regrid = esmpy.Regrid(src_field, dst_field, **regrid_kwargs)
         weights = regrid.get_weights_dict(deep_copy=True)
+
+        # 5. Map local destination indices to global grid indices
+        if isinstance(dest_slice_info, np.ndarray):
+            # Backward compatibility or direct index passing
+            global_indices = dest_slice_info
+        else:
+            # Reconstruct global indices locally to save driver memory (Aero Protocol)
+            i0_start, i0_end, i1_start, i1_end, total_size1 = dest_slice_info
+            n0, n1 = i0_end - i0_start, i1_end - i1_start
+            global_indices = (
+                (np.arange(n0)[:, None] + i0_start) * total_size1
+                + (np.arange(n1) + i1_start)
+            ).flatten()
 
         rows = global_indices[weights["row_dst"] - 1]
         cols = weights["col_src"] - 1
@@ -484,25 +498,27 @@ def _apply_weights_core(
                     result /= total_weights
         else:
             # Slow path: Handle NaNs by re-normalizing weights
-            # Optimization: Use np.where to create zeroed array instead of nan_to_num(copy=True)
-            # and specify dtype to potentially save memory if input is float32
-            safe_data = np.where(mask, 0.0, flat_data).astype(flat_data.dtype)
+            # Optimization: Use the input dtype for safe_data to avoid float64 promotion
+            zero = flat_data.dtype.type(0)
+            safe_data = np.where(mask, zero, flat_data)
             result = _matmul(weights_matrix, safe_data)
 
             # Optimization: Check if the NaN mask is constant across non-spatial dimensions
+            # Extremely common for fixed land/sea masks in geospatial data.
             is_mask_stationary = False
             if n_other > 1:
-                # Comparison of all masks against the first one
+                # Comparison of all masks against the first one. Fast for boolean arrays.
                 if np.all(mask == mask[0:1]):
                     is_mask_stationary = True
 
             if is_mask_stationary:
                 # Compute normalization only for the first (representative) mask
                 # Use float32 for normalization weights to save memory on large grids
-                valid_mask_single = np.logical_not(mask[0]).astype(np.float32)
-                weights_sum = _matmul(weights_matrix, valid_mask_single[np.newaxis, :])
+                valid_mask_single = np.logical_not(mask[0:1]).astype(np.float32)
+                weights_sum = _matmul(weights_matrix, valid_mask_single)
             else:
                 # Sum weights of valid (non-NaN) points for each slice
+                # We use float32 to keep peak memory down for ~1km grids
                 valid_mask = np.logical_not(mask).astype(np.float32)
                 weights_sum = _matmul(weights_matrix, valid_mask)
 
@@ -511,8 +527,10 @@ def _apply_weights_core(
                 if total_weights is not None:
                     fraction_valid = weights_sum / total_weights
                     # Masking of low-confidence points
+                    # Ensure NaN value doesn't force promotion to float64
+                    nan_val = result.dtype.type(np.nan)
                     result = np.where(
-                        fraction_valid < (1.0 - na_thres - 1e-6), np.nan, result
+                        fraction_valid < (1.0 - na_thres - 1e-6), nan_val, result
                     )
     else:
         # Standard path (skipna=False): Just apply weights
@@ -973,9 +991,6 @@ class Regridder:
         indices0 = np.array_split(np.arange(size0), n0)
         indices1 = np.array_split(np.arange(size1), n1)
 
-        # Pre-compute global indices for the target grid to handle non-contiguous chunks
-        global_indices = np.arange(size0 * size1).reshape(size0, size1)
-
         futures = []
 
         # Scatter source grid info (minimal)
@@ -993,23 +1008,24 @@ class Regridder:
                     continue
 
                 # Slice target grid
-                sel_dict = {dim0: slice(idx0[0], idx0[-1] + 1)}
+                i0_start, i0_end = idx0[0], idx0[-1] + 1
+                i1_start, i1_end = (idx1[0], idx1[-1] + 1) if dim1 else (0, 1)
+
+                sel_dict = {dim0: slice(i0_start, i0_end)}
                 if dim1:
-                    sel_dict[dim1] = slice(idx1[0], idx1[-1] + 1)
+                    sel_dict[dim1] = slice(i1_start, i1_end)
 
                 chunk_ds = self.target_grid_ds.isel(sel_dict)
 
-                # Extract global indices for this chunk
-                chunk_global_indices = global_indices[
-                    idx0[0] : idx0[-1] + 1, idx1[0] : idx1[-1] + 1
-                ].flatten()
+                # Pass slice info instead of massive array to workers (Aero Protocol: Driver Efficiency)
+                dest_slice_info = (i0_start, i0_end, i1_start, i1_end, size1)
 
                 future = client.submit(
                     _compute_chunk_weights,
                     src_ds_future,
                     chunk_ds,
                     self.method,
-                    chunk_global_indices,
+                    dest_slice_info,
                     self.extrap_method,
                     self.extrap_dist_exponent,
                     self.mask_var,
@@ -1179,9 +1195,15 @@ class Regridder:
             # Optimization: Use sum(axis=1) instead of memory-intensive ones multiplication
             self._total_weights = np.array(self._weights_matrix.sum(axis=1)).T
 
-    def quality_report(self) -> dict[str, Any]:
+    def quality_report(self, skip_heavy: bool = False) -> dict[str, Any]:
         """
         Generate a scientific quality report of the regridding weights.
+
+        Parameters
+        ----------
+        skip_heavy : bool, default False
+            If True, skip metrics that require full weight matrix summation
+            (expensive for massive grids).
 
         Returns
         -------
@@ -1200,26 +1222,33 @@ class Regridder:
             raise RuntimeError("Weights have not been generated yet.")
 
         n_dst, n_src = self._weights_matrix.shape
-        # Sum weights for each destination row
-        weights_sum = np.array(self._weights_matrix.sum(axis=1)).flatten()
-
-        unmapped = weights_sum == 0
-        unmapped_count = int(np.sum(unmapped))
 
         report = {
-            "unmapped_count": unmapped_count,
-            "unmapped_fraction": float(unmapped_count / n_dst),
-            "weight_sum_min": float(np.min(weights_sum[~unmapped]))
-            if unmapped_count < n_dst
-            else 0.0,
-            "weight_sum_max": float(np.max(weights_sum)),
-            "weight_sum_mean": float(np.mean(weights_sum)),
             "n_src": n_src,
             "n_dst": n_dst,
             "n_weights": int(self._weights_matrix.nnz),
             "method": self.method,
             "periodic": self.periodic,
         }
+
+        if not skip_heavy:
+            # Sum weights for each destination row
+            weights_sum = np.array(self._weights_matrix.sum(axis=1)).flatten()
+
+            unmapped = weights_sum == 0
+            unmapped_count = int(np.sum(unmapped))
+
+            report.update(
+                {
+                    "unmapped_count": unmapped_count,
+                    "unmapped_fraction": float(unmapped_count / n_dst),
+                    "weight_sum_min": float(np.min(weights_sum[~unmapped]))
+                    if unmapped_count < n_dst
+                    else 0.0,
+                    "weight_sum_max": float(np.max(weights_sum)),
+                    "weight_sum_mean": float(np.mean(weights_sum)),
+                }
+            )
         return report
 
     def weights_to_xarray(self) -> xr.Dataset:
@@ -1263,13 +1292,17 @@ class Regridder:
             Summary of the regridder configuration.
         """
         quality_str = "quality=deferred"
-        n_dst = np.prod(self._shape_target) if self._shape_target else 0
+        n_dst = int(np.prod(self._shape_target)) if self._shape_target else 0
 
-        # Optimization: Avoid expensive quality report for massive grids
-        if n_dst > 0 and n_dst < 1_000_000:
+        # Optimization: Avoid expensive quality report for massive grids (Aero Protocol)
+        if n_dst > 0:
             try:
-                report = self.quality_report()
-                quality_str = f"unmapped={report['unmapped_fraction']:.2%}"
+                if n_dst < 10_000_000:
+                    report = self.quality_report()
+                    quality_str = f"unmapped={report['unmapped_fraction']:.2%}"
+                else:
+                    report = self.quality_report(skip_heavy=True)
+                    quality_str = f"nnz={report['n_weights']}"
             except Exception:
                 quality_str = "quality=unknown"
 
