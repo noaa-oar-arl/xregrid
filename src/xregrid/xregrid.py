@@ -464,17 +464,33 @@ def _apply_weights_core(
             safe_data = np.nan_to_num(flat_data, nan=0.0, copy=True)
             result = (weights_matrix @ safe_data.T).T
 
-            # Sum weights of valid (non-NaN) points
-            # logical_not + astype is efficient for large arrays
-            valid_mask = np.logical_not(mask).astype(np.float32)
-            weights_sum = (weights_matrix @ valid_mask.T).T
+            # Optimization: Check if the NaN mask is constant across non-spatial dimensions
+            # If it is, we only need to compute weights_sum once.
+            is_mask_stationary = False
+            if n_other > 1:
+                # Comparison of all masks against the first one
+                if np.all(mask == mask[0:1]):
+                    is_mask_stationary = True
+
+            if is_mask_stationary:
+                # Compute normalization only for the first (representative) mask
+                valid_mask_single = np.logical_not(mask[0]).astype(np.float32)
+                weights_sum = (weights_matrix @ valid_mask_single).T
+            else:
+                # Sum weights of valid (non-NaN) points for each slice
+                # logical_not + astype is efficient for large arrays
+                valid_mask = np.logical_not(mask).astype(np.float32)
+                weights_sum = (weights_matrix @ valid_mask.T).T
 
             with np.errstate(divide="ignore", invalid="ignore"):
                 result /= weights_sum
                 if total_weights is not None:
                     fraction_valid = weights_sum / total_weights
-                    # In-place masking of low-confidence points
-                    result[fraction_valid < (1.0 - na_thres - 1e-6)] = np.nan
+                    # Masking of low-confidence points
+                    # Use np.where for robust broadcasting across optimized/non-optimized paths
+                    result = np.where(
+                        fraction_valid < (1.0 - na_thres - 1e-6), np.nan, result
+                    )
     else:
         # Standard path (skipna=False): Just apply weights
         # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
@@ -1321,3 +1337,63 @@ class Regridder:
         update_history(out, history_msg)
 
         return out
+
+
+@xr.register_dataarray_accessor("regrid")
+class RegridDataArrayAccessor:
+    """
+    Xarray Accessor for regridding DataArrays.
+    """
+
+    def __init__(self, xarray_obj: xr.DataArray):
+        self._obj = xarray_obj
+
+    def to(self, target_grid: xr.Dataset, **kwargs: Any) -> xr.DataArray:
+        """
+        Regrid the DataArray to a target grid.
+
+        Parameters
+        ----------
+        target_grid : xr.Dataset
+            The target grid dataset.
+        **kwargs : Any
+            Arguments passed to the Regridder constructor.
+
+        Returns
+        -------
+        xr.DataArray
+            The regridded DataArray.
+        """
+        # Convert DataArray to Dataset to ensure compatibility with Regridder
+        source_ds = self._obj.to_dataset(name="_tmp_data")
+        regridder = Regridder(source_ds, target_grid, **kwargs)
+        return regridder(self._obj)
+
+
+@xr.register_dataset_accessor("regrid")
+class RegridDatasetAccessor:
+    """
+    Xarray Accessor for regridding Datasets.
+    """
+
+    def __init__(self, xarray_obj: xr.Dataset):
+        self._obj = xarray_obj
+
+    def to(self, target_grid: xr.Dataset, **kwargs: Any) -> xr.Dataset:
+        """
+        Regrid the Dataset to a target grid.
+
+        Parameters
+        ----------
+        target_grid : xr.Dataset
+            The target grid dataset.
+        **kwargs : Any
+            Arguments passed to the Regridder constructor.
+
+        Returns
+        -------
+        xr.Dataset
+            The regridded Dataset.
+        """
+        regridder = Regridder(self._obj, target_grid, **kwargs)
+        return regridder(self._obj)
