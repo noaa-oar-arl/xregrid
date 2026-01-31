@@ -9,10 +9,7 @@ import numpy as np
 import xarray as xr
 from scipy.sparse import coo_matrix
 
-try:
-    import esmpy
-except ImportError:
-    esmpy = None
+import esmpy
 
 from .utils import update_history
 
@@ -34,7 +31,34 @@ def _setup_worker_cache(key: str, value: Any) -> None:
 def _get_mesh_info(
     ds: xr.Dataset,
 ) -> Tuple[xr.DataArray, xr.DataArray, Tuple[int, ...], Tuple[str, ...], bool]:
-    """Detect grid type and extract coordinates and shape."""
+    """
+    Detect grid type and extract coordinates and shape from a dataset.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The input dataset containing spatial coordinates.
+
+    Returns
+    -------
+    lon : xr.DataArray
+        Longitude coordinate array.
+    lat : xr.DataArray
+        Latitude coordinate array.
+    shape : tuple of int
+        The spatial shape of the grid.
+    dims : tuple of str
+        The names of the spatial dimensions.
+    is_unstructured : bool
+        Whether the grid is unstructured.
+
+    Raises
+    ------
+    KeyError
+        If latitude or longitude coordinates cannot be found.
+    ValueError
+        If coordinates have invalid dimensionality.
+    """
     try:
         lat = ds.cf["latitude"]
         lon = ds.cf["longitude"]
@@ -79,7 +103,21 @@ def _get_mesh_info(
 
 
 def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
-    """Convert bounds to vertices for ESMF."""
+    """
+    Convert cell boundary coordinates (bounds) to vertex coordinates for ESMF.
+
+    Supports both 1D and 2D bounds.
+
+    Parameters
+    ----------
+    b : xr.DataArray
+        The input boundary coordinate array.
+
+    Returns
+    -------
+    np.ndarray
+        The vertex coordinate array.
+    """
     if b.ndim == 2 and b.shape[-1] == 2:
         return np.concatenate([b.values[:, 0], b.values[-1:, 1]])
     elif b.ndim == 3 and b.shape[-1] == 4:
@@ -97,7 +135,21 @@ def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
 def _get_grid_bounds(
     ds: xr.Dataset,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """Extract grid cell boundaries from a dataset."""
+    """
+    Extract grid cell boundaries from a dataset using cf-xarray or standard names.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The input dataset.
+
+    Returns
+    -------
+    lat_b : np.ndarray or None
+        Latitude boundary coordinates.
+    lon_b : np.ndarray or None
+        Longitude boundary coordinates.
+    """
     try:
         lat_b_da = ds.cf.get_bounds("latitude")
         lon_b_da = ds.cf.get_bounds("longitude")
@@ -119,11 +171,30 @@ def _create_esmf_grid(
     method: str,
     periodic: bool = False,
     mask_var: Optional[str] = None,
-) -> Union[esmpy.Grid, esmpy.LocStream]:
-    """Creates an ESMF Grid or LocStream."""
-    import esmpy
+) -> Tuple[Union[esmpy.Grid, esmpy.LocStream], list[str]]:
+    """
+    Create an ESMF Grid or LocStream from an xarray Dataset.
 
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The input dataset.
+    method : str
+        The regridding method.
+    periodic : bool, default False
+        Whether the grid is periodic in longitude.
+    mask_var : str, optional
+        Variable name for the mask.
+
+    Returns
+    -------
+    grid : esmpy.Grid or esmpy.LocStream
+        The created ESMF object.
+    provenance : list of str
+        A list of provenance messages describing automatic transformations.
+    """
     lon, lat, shape, dims, is_unstructured = _get_mesh_info(ds)
+    provenance = []
 
     if is_unstructured:
         if method not in ["nearest_s2d", "nearest_d2s"]:
@@ -133,7 +204,7 @@ def _create_esmf_grid(
         locstream = esmpy.LocStream(shape[0], coord_sys=esmpy.CoordSys.SPH_DEG)
         locstream["ESMF:Lon"] = lon.values.astype(np.float64)
         locstream["ESMF:Lat"] = lat.values.astype(np.float64)
-        return locstream
+        return locstream, provenance
     else:
         lon_f = lon.values.T
         lat_f = lat.values.T
@@ -150,9 +221,8 @@ def _create_esmf_grid(
                 ds_with_bounds = ds.cf.add_bounds(["latitude", "longitude"])
                 lat_b, lon_b = _get_grid_bounds(ds_with_bounds)
                 if lat_b is not None and lon_b is not None:
-                    update_history(
-                        ds,
-                        f"Automatically generated cell boundaries for {method} regridding.",
+                    provenance.append(
+                        f"Automatically generated cell boundaries for {method} regridding."
                     )
             except Exception:
                 pass
@@ -209,7 +279,7 @@ def _create_esmf_grid(
             grid.get_item(esmpy.GridItem.MASK, staggerloc=esmpy.StaggerLoc.CENTER)[
                 ...
             ] = ds[mask_var].values.T.astype(np.int32)
-        return grid
+        return grid, provenance
 
 
 def _compute_chunk_weights(
@@ -224,11 +294,40 @@ def _compute_chunk_weights(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[str]]:
     """
     Worker function to compute weights for a specific chunk of the target grid.
-    Uses worker-local caching for source ESMF objects.
+
+    Uses worker-local caching for source ESMF objects to avoid redundant initialization.
+
+    Parameters
+    ----------
+    source_ds : xr.Dataset
+        The source grid dataset.
+    chunk_ds : xr.Dataset
+        A chunk of the target grid dataset.
+    method : str
+        The regridding method.
+    global_indices : np.ndarray
+        Flat global indices for this chunk's destination pixels.
+    extrap_method : str, optional
+        The extrapolation method.
+    extrap_dist_exponent : float, default 2.0
+        The IDW extrapolation exponent.
+    mask_var : str, optional
+        Variable name for the mask.
+    periodic : bool, default False
+        Whether the grid is periodic in longitude.
+
+    Returns
+    -------
+    rows : np.ndarray
+        Destination indices (0-based, global).
+    cols : np.ndarray
+        Source indices (0-based).
+    data : np.ndarray
+        Regridding weights.
+    error : str or None
+        Error message if weight generation failed.
     """
     try:
-        import esmpy
-
         # Initialize Manager if not already done in this process
         esmpy.Manager(debug=False)
 
@@ -238,12 +337,12 @@ def _compute_chunk_weights(
         if src_cache_key in _WORKER_CACHE:
             src_field = _WORKER_CACHE[src_cache_key]
         else:
-            src_obj = _create_esmf_grid(source_ds, method, periodic, mask_var)
+            src_obj, _ = _create_esmf_grid(source_ds, method, periodic, mask_var)
             src_field = esmpy.Field(src_obj, name="src")
             _WORKER_CACHE[src_cache_key] = src_field
 
         # 2. Create target ESMF object (chunk is small, no need to cache)
-        dst_obj = _create_esmf_grid(chunk_ds, method, periodic=False, mask_var=None)
+        dst_obj, _ = _create_esmf_grid(chunk_ds, method, periodic=False, mask_var=None)
         dst_field = esmpy.Field(dst_obj, name="dst")
 
         # 3. Setup regridding parameters
@@ -358,23 +457,24 @@ def _apply_weights_core(
             )
             if total_weights is not None:
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    result = result / total_weights
+                    result /= total_weights
         else:
             # Slow path: Handle NaNs by re-normalizing weights
-            safe_data = np.where(mask, 0.0, flat_data)
+            # Use nan_to_num to efficiently replace NaNs with 0.0
+            safe_data = np.nan_to_num(flat_data, nan=0.0, copy=True)
             result = (weights_matrix @ safe_data.T).T
+
             # Sum weights of valid (non-NaN) points
-            weights_sum = (weights_matrix @ (~mask).astype(np.float32).T).T
+            # logical_not + astype is efficient for large arrays
+            valid_mask = np.logical_not(mask).astype(np.float32)
+            weights_sum = (weights_matrix @ valid_mask.T).T
+
             with np.errstate(divide="ignore", invalid="ignore"):
-                final_result = result / weights_sum
+                result /= weights_sum
                 if total_weights is not None:
                     fraction_valid = weights_sum / total_weights
-                    final_result = np.where(
-                        fraction_valid >= (1.0 - na_thres - 1e-6),
-                        final_result,
-                        np.nan,
-                    )
-            result = final_result
+                    # In-place masking of low-confidence points
+                    result[fraction_valid < (1.0 - na_thres - 1e-6)] = np.nan
     else:
         # Standard path (skipna=False): Just apply weights
         # Optimized CSR application: (matrix @ data.T).T is faster than data @ matrix.T
@@ -467,12 +567,6 @@ class Regridder:
         extrap_dist_exponent : float, default 2.0
             Exponent for IDW extrapolation.
         """
-        if esmpy is None:
-            raise ImportError(
-                "ESMPy is required for Regridder. "
-                "Please install it via conda: `conda install -c conda-forge esmpy`"
-            )
-
         if mpi and parallel:
             raise ValueError(
                 "Cannot use both MPI and Dask (parallel=True) simultaneously."
@@ -537,6 +631,7 @@ class Regridder:
         self._dask_futures: Optional[list] = None
         self._dask_client: Optional[Any] = None
         self._dask_start_time: Optional[float] = None
+        self.provenance: list[str] = []
 
         if reuse_weights and os.path.exists(filename):
             self._load_weights()
@@ -553,6 +648,11 @@ class Regridder:
 
         Ensures that shapes, dimension names, regridding method, and periodicity
         match the requested configuration to maintain scientific integrity.
+
+        Raises
+        ------
+        ValueError
+            If the loaded weights do not match the current regridding configuration.
         """
         # Get current grid info
         _, _, src_shape, src_dims, _ = self._get_mesh_info(self.source_grid_ds)
@@ -593,24 +693,44 @@ class Regridder:
     def _get_mesh_info(
         self, ds: xr.Dataset
     ) -> Tuple[xr.DataArray, xr.DataArray, Tuple[int, ...], Tuple[str, ...], bool]:
-        """Detect grid type and extract coordinates and shape."""
+        """
+        Instance-level wrapper for _get_mesh_info.
+        """
         return _get_mesh_info(ds)
 
     def _bounds_to_vertices(self, b: xr.DataArray) -> np.ndarray:
-        """Convert bounds to vertices for ESMF."""
+        """
+        Instance-level wrapper for _bounds_to_vertices.
+        """
         return _bounds_to_vertices(b)
 
     def _get_grid_bounds(
         self, ds: xr.Dataset
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Extract grid cell boundaries from a dataset."""
+        """
+        Instance-level wrapper for _get_grid_bounds.
+        """
         return _get_grid_bounds(ds)
 
     def _create_esmf_object(
         self, ds: xr.Dataset, is_source: bool = True
-    ) -> Union[esmpy.Grid, esmpy.LocStream]:
+    ) -> Tuple[Union[esmpy.Grid, esmpy.LocStream], list[str]]:
         """
-        Creates an ESMF Grid or LocStream.
+        Creates an ESMF Grid or LocStream and updates internal metadata.
+
+        Parameters
+        ----------
+        ds : xr.Dataset
+            The grid dataset.
+        is_source : bool, default True
+            Whether this is the source grid or target grid.
+
+        Returns
+        -------
+        grid : esmpy.Grid or esmpy.LocStream
+            The created ESMF object.
+        provenance : list of str
+            Provenance messages from grid creation.
         """
         lon, lat, shape, dims, is_unstructured = self._get_mesh_info(ds)
 
@@ -631,14 +751,24 @@ class Regridder:
         )
 
     def _generate_weights(self) -> None:
-        """Generate regridding weights using ESMPy."""
+        """
+        Generate regridding weights using ESMPy.
+
+        This is the core weight generation method for serial or MPI-based execution.
+        """
         if self.parallel:
             self._generate_weights_dask(compute=self.compute_on_init)
             return
 
         start_time = time.perf_counter()
-        src_obj = self._create_esmf_object(self.source_grid_ds, is_source=True)
-        dst_obj = self._create_esmf_object(self.target_grid_ds, is_source=False)
+        src_obj, src_prov = self._create_esmf_object(
+            self.source_grid_ds, is_source=True
+        )
+        dst_obj, dst_prov = self._create_esmf_object(
+            self.target_grid_ds, is_source=False
+        )
+        self.provenance.extend(src_prov)
+        self.provenance.extend(dst_prov)
 
         src_field = esmpy.Field(src_obj, name="src")
         dst_field = esmpy.Field(dst_obj, name="dst")
@@ -732,7 +862,17 @@ class Regridder:
         self.generation_time = time.perf_counter() - start_time
 
     def _generate_weights_dask(self, compute: bool = True) -> None:
-        """Generate regridding weights using Dask parallel workers."""
+        """
+        Generate regridding weights using Dask parallel workers.
+
+        Splits the target grid into chunks and distributes weight generation tasks
+        across a Dask cluster.
+
+        Parameters
+        ----------
+        compute : bool, default True
+            Whether to immediately trigger computation and gather weights.
+        """
         import dask.distributed
 
         self._dask_start_time = time.perf_counter()
@@ -869,6 +1009,8 @@ class Regridder:
     def compute(self) -> None:
         """
         Trigger computation of weights if using Dask and not yet computed.
+
+        Gathers all distributed weight futures and constructs the final sparse weight matrix.
         """
         if not self.parallel or self._weights_matrix is not None:
             return
@@ -914,7 +1056,11 @@ class Regridder:
         self._dask_futures = None
 
     def _save_weights(self) -> None:
-        """Save weights to a NetCDF file."""
+        """
+        Save regridding weights and metadata to a NetCDF file.
+
+        Only the root rank (PET 0) performs file I/O.
+        """
         if esmpy.local_pet() != 0:
             return  # Only rank 0 saves weights
 
@@ -941,6 +1087,7 @@ class Regridder:
                 "is_unstructured_tgt": int(self._is_unstructured_tgt),
                 "method": self.method,
                 "periodic": int(self.periodic),
+                "provenance": "; ".join(self.provenance) if self.provenance else "",
                 "extrap_method": self.extrap_method or "none",
                 "extrap_dist_exponent": self.extrap_dist_exponent,
                 "generation_time": self.generation_time
@@ -952,7 +1099,9 @@ class Regridder:
         ds_weights.to_netcdf(self.filename)
 
     def _load_weights(self) -> None:
-        """Load weights from a NetCDF file."""
+        """
+        Load regridding weights and metadata from a NetCDF file.
+        """
         with xr.open_dataset(self.filename) as ds_weights:
             ds_weights.load()
             rows = ds_weights["row"].values - 1
@@ -978,6 +1127,9 @@ class Regridder:
             self._loaded_method = ds_weights.attrs.get("method")
             self._loaded_extrap = ds_weights.attrs.get("extrap_method", "none")
             self.generation_time = ds_weights.attrs.get("generation_time")
+            loaded_prov = ds_weights.attrs.get("provenance", "")
+            if loaded_prov:
+                self.provenance = loaded_prov.split("; ")
 
         self._weights_matrix = coo_matrix(
             (data, (rows, cols)), shape=(n_dst, n_src)
@@ -1036,14 +1188,14 @@ class Regridder:
 
         Parameters
         ----------
-        da_in : xarray.DataArray
+        da_in : xr.DataArray
             The input DataArray.
         update_history_attr : bool, default True
             Whether to update the history attribute.
 
         Returns
         -------
-        xarray.DataArray
+        xr.DataArray
             The regridded DataArray.
         """
 
@@ -1115,6 +1267,8 @@ class Regridder:
                 f"Regridded using Regridder (method={self.method}, "
                 f"periodic={self.periodic}, skipna={self.skipna})"
             )
+            for msg in self.provenance:
+                history_msg += f". {msg}"
             if self.generation_time:
                 history_msg += f". Weight generation time: {self.generation_time:.4f}s"
             update_history(out, history_msg)
@@ -1127,12 +1281,12 @@ class Regridder:
 
         Parameters
         ----------
-        ds_in : xarray.Dataset
+        ds_in : xr.Dataset
             The input Dataset.
 
         Returns
         -------
-        xarray.Dataset
+        xr.Dataset
             The regridded Dataset.
         """
         regridded_vars = {}
@@ -1159,6 +1313,8 @@ class Regridder:
             f"Regridded Dataset using Regridder (method={self.method}, "
             f"periodic={self.periodic}, skipna={self.skipna})"
         )
+        for msg in self.provenance:
+            history_msg += f". {msg}"
         if self.generation_time:
             history_msg += f". Weight generation time: {self.generation_time:.4f}s"
 

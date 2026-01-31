@@ -139,9 +139,15 @@ def plot_static(
                 )
 
     if ax is None and not is_faceted:
+        # Strictly enforce projection in axes creation (Aero Protocol)
+        if projection is None and ccrs is not None:
+            projection = ccrs.PlateCarree()
         ax = plt.axes(projection=projection)
 
     # Enforce transform for geospatial accuracy (Aero Protocol)
+    if transform is None and ccrs is not None:
+        transform = ccrs.PlateCarree()
+
     if "transform" not in kwargs:
         kwargs["transform"] = transform
 
@@ -268,6 +274,7 @@ def plot_interactive(
 def plot_comparison(
     da_src: xr.DataArray,
     da_tgt: xr.DataArray,
+    regridder: Optional[Any] = None,
     projection: Any = None,
     transform: Any = None,
     cmap: str = "viridis",
@@ -284,6 +291,9 @@ def plot_comparison(
         The source DataArray.
     da_tgt : xr.DataArray
         The target (regridded) DataArray.
+    regridder : Regridder, optional
+        The regridder used to transform da_src to da_tgt.
+        If provided, it will be used to calculate the difference plot correctly.
     projection : cartopy.crs.Projection, optional
         The projection for the axes.
     transform : cartopy.crs.Projection, optional
@@ -308,11 +318,12 @@ def plot_comparison(
     if projection is None and ccrs is not None:
         projection = ccrs.PlateCarree()
 
+    # Enforce projection on all subplots for comparison consistency (Aero Protocol)
     fig, axes = plt.subplots(
         1,
         3,
         figsize=(18, 5),
-        subplot_kw={"projection": projection} if projection else None,
+        subplot_kw={"projection": projection},
     )
 
     # 1. Source Plot
@@ -338,9 +349,13 @@ def plot_comparison(
     )
 
     # 3. Difference Plot
-    # Interpolate source to target grid for difference calculation
+    # Use Regridder if provided for exact difference, otherwise fallback to interp_like
     try:
-        da_src_interp = da_src.interp_like(da_tgt, method="linear")
+        if regridder is not None:
+            da_src_interp = regridder(da_src)
+        else:
+            da_src_interp = da_src.interp_like(da_tgt, method="linear")
+
         diff = da_tgt - da_src_interp
         plot_static(
             diff,
