@@ -271,6 +271,70 @@ def plot_interactive(
     return da.hvplot(rasterize=rasterize, title=title, **kwargs)
 
 
+def plot_diagnostics(
+    regridder: Any,
+    projection: Any = None,
+    **kwargs: Any,
+) -> Any:
+    """
+    Track A: Publication-quality diagnostic plot of regridding weights.
+
+    Visualizes the weight sum and unmapped mask on the target grid.
+
+    Parameters
+    ----------
+    regridder : Regridder
+        The regridder instance to diagnose.
+    projection : cartopy.crs.Projection, optional
+        The projection for the axes.
+    **kwargs : Any
+        Additional arguments passed to plot_static.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The figure object.
+    """
+    if plt is None:
+        raise ImportError("Matplotlib is required for plot_diagnostics.")
+
+    ds_diag = regridder.diagnostics()
+
+    if projection is None and ccrs is not None:
+        projection = ccrs.PlateCarree()
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(12, 5),
+        subplot_kw={"projection": projection},
+    )
+
+    # 1. Weight Sum Plot
+    plot_static(
+        ds_diag.weight_sum,
+        ax=axes[0],
+        projection=projection,
+        title="Weight Sum",
+        cmap="viridis",
+        **kwargs,
+    )
+
+    # 2. Unmapped Mask Plot
+    plot_static(
+        ds_diag.unmapped_mask.astype(int),
+        ax=axes[1],
+        projection=projection,
+        title="Unmapped Mask (1=unmapped)",
+        cmap="Reds",
+        **kwargs,
+    )
+
+    fig.suptitle(f"Regridding Diagnostics ({regridder.method})", fontsize=16)
+    plt.tight_layout()
+    return fig
+
+
 def plot_comparison(
     da_src: xr.DataArray,
     da_tgt: xr.DataArray,

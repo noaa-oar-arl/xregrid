@@ -1321,6 +1321,64 @@ class Regridder:
             )
         return report
 
+    def diagnostics(self) -> xr.Dataset:
+        """
+        Generate spatial diagnostics of the regridding weights on the target grid.
+
+        Returns
+        -------
+        xr.Dataset
+            A dataset on the target grid containing spatial maps of weight coverage.
+            Variables:
+            - weight_sum: Sum of weights for each destination cell.
+            - unmapped_mask: Boolean mask (True where cell is unmapped).
+        """
+        if self._weights_matrix is None:
+            raise RuntimeError("Weights have not been generated yet.")
+
+        # Compute weight sum per destination row
+        weights_sum_flat = np.array(self._weights_matrix.sum(axis=1)).flatten()
+        unmapped_flat = weights_sum_flat == 0
+
+        # Reshape to target grid dimensions
+        weights_sum = weights_sum_flat.reshape(self._shape_target)
+        unmapped_mask = unmapped_flat.reshape(self._shape_target)
+
+        ds = xr.Dataset(
+            data_vars={
+                "weight_sum": (
+                    self._dims_target,
+                    weights_sum,
+                    {"description": "Sum of weights for each destination cell"},
+                ),
+                "unmapped_mask": (
+                    self._dims_target,
+                    unmapped_mask,
+                    {
+                        "description": "Mask of unmapped destination cells (True=unmapped)"
+                    },
+                ),
+            },
+            attrs={
+                "method": self.method,
+                "periodic": self.periodic,
+            },
+        )
+
+        # Assign coordinates from target grid
+        ds = ds.assign_coords(
+            {
+                c: self.target_grid_ds.coords[c]
+                for c in self.target_grid_ds.coords
+                if set(self.target_grid_ds.coords[c].dims).issubset(
+                    set(self._dims_target)
+                )
+            }
+        )
+
+        update_history(ds, "Generated regridding diagnostics.")
+        return ds
+
     def weights_to_xarray(self) -> xr.Dataset:
         """
         Export regridding weights and metadata as an xarray Dataset.
@@ -1365,16 +1423,14 @@ class Regridder:
         n_dst = int(np.prod(self._shape_target)) if self._shape_target else 0
 
         # Optimization: Avoid expensive quality report for massive grids (Aero Protocol)
-        if n_dst > 0:
+        if 0 < n_dst < 1_000_000:
             try:
-                if n_dst < 10_000_000:
-                    report = self.quality_report()
-                    quality_str = f"unmapped={report['unmapped_fraction']:.2%}"
-                else:
-                    report = self.quality_report(skip_heavy=True)
-                    quality_str = f"nnz={report['n_weights']}"
+                report = self.quality_report()
+                quality_str = f"unmapped={report['unmapped_fraction']:.2%}"
             except Exception:
                 quality_str = "quality=unknown"
+        elif n_dst >= 1_000_000:
+            quality_str = "quality=deferred"
 
         return (
             f"Regridder(method={self.method}, "
