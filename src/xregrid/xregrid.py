@@ -745,6 +745,42 @@ class Regridder:
             if reuse_weights:
                 self._save_weights()
 
+    @classmethod
+    def from_weights(
+        cls,
+        filename: str,
+        source_grid_ds: xr.Dataset,
+        target_grid_ds: xr.Dataset,
+        **kwargs: Any,
+    ) -> "Regridder":
+        """
+        Create a Regridder from a pre-computed weights file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the weights file.
+        source_grid_ds : xr.Dataset
+            The source grid dataset.
+        target_grid_ds : xr.Dataset
+            The target grid dataset.
+        **kwargs : Any
+            Additional arguments passed to the Regridder constructor.
+            These will be validated against the weights file.
+
+        Returns
+        -------
+        Regridder
+            The initialized Regridder instance.
+        """
+        return cls(
+            source_grid_ds,
+            target_grid_ds,
+            filename=filename,
+            reuse_weights=True,
+            **kwargs,
+        )
+
     def _validate_weights(self) -> None:
         """
         Validate loaded weights against the provided source and target grids.
@@ -791,6 +827,20 @@ class Regridder:
                 raise ValueError(
                     f"Requested extrap_method='{current_extrap}' does not match "
                     f"loaded weights extrap_method='{self._loaded_extrap}'"
+                )
+
+        if hasattr(self, "_loaded_skipna") and self._loaded_skipna is not None:
+            if self._loaded_skipna != self.skipna:
+                raise ValueError(
+                    f"Requested skipna={self.skipna} does not match "
+                    f"loaded weights skipna={self._loaded_skipna}"
+                )
+
+        if hasattr(self, "_loaded_na_thres") and self._loaded_na_thres is not None:
+            if abs(self._loaded_na_thres - self.na_thres) > 1e-6:
+                raise ValueError(
+                    f"Requested na_thres={self.na_thres} does not match "
+                    f"loaded weights na_thres={self._loaded_na_thres}"
                 )
 
     def _get_mesh_info(
@@ -1213,6 +1263,8 @@ class Regridder:
                 "is_unstructured_tgt": int(self._is_unstructured_tgt),
                 "method": self.method,
                 "periodic": int(self.periodic),
+                "skipna": int(self.skipna),
+                "na_thres": self.na_thres,
                 "provenance": "; ".join(self.provenance) if self.provenance else "",
                 "extrap_method": self.extrap_method or "none",
                 "extrap_dist_exponent": self.extrap_dist_exponent,
@@ -1252,6 +1304,8 @@ class Regridder:
             self._loaded_periodic = bool(ds_weights.attrs.get("periodic", False))
             self._loaded_method = ds_weights.attrs.get("method")
             self._loaded_extrap = ds_weights.attrs.get("extrap_method", "none")
+            self._loaded_skipna = bool(ds_weights.attrs.get("skipna", False))
+            self._loaded_na_thres = float(ds_weights.attrs.get("na_thres", 1.0))
             self.generation_time = ds_weights.attrs.get("generation_time")
             loaded_prov = ds_weights.attrs.get("provenance", "")
             if loaded_prov:
@@ -1644,6 +1698,7 @@ class Regridder:
         # Preserve name and attributes
         out.name = da_in.name
         out.attrs.update(da_in.attrs)
+        out.encoding.update(da_in.encoding)
 
         # Assign coordinates from target grid
         out = out.assign_coords(
