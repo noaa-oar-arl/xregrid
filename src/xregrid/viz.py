@@ -25,8 +25,10 @@ except ImportError:
 
 try:
     import hvplot.xarray  # noqa: F401
+    import holoviews as hv
 except ImportError:
     hvplot = None
+    hv = None
 else:
     hvplot = True
 
@@ -49,15 +51,20 @@ def plot_static(
         The projection to use for the axes. Defaults to ccrs.PlateCarree() if cartopy is available.
     transform : cartopy.crs.Projection, optional
         The transform to use for the plot call. Defaults to ccrs.PlateCarree() if cartopy is available.
-    title : str, default 'Static Map'
+    title : str, optional
         The plot title.
     **kwargs : Any
         Additional arguments passed to da.plot().
 
     Returns
     -------
-    matplotlib.collections.QuadMesh or similar
-        The plot object.
+    Any
+        The plot object (e.g., matplotlib QuadMesh or FacetGrid).
+
+    Raises
+    ------
+    ImportError
+        If matplotlib is not installed.
     """
     if plt is None:
         raise ImportError(
@@ -240,6 +247,11 @@ def plot(
     -------
     Any
         The plot object (Matplotlib artist or HvPlot object).
+
+    Raises
+    ------
+    ValueError
+        If an unknown plotting mode is provided.
     """
     if mode == "static":
         return plot_static(da, **kwargs)
@@ -273,8 +285,13 @@ def plot_interactive(
 
     Returns
     -------
-    hvplot.Interactive
-        The interactive plot object.
+    Any
+        The interactive plot object (HvPlot/HoloViews).
+
+    Raises
+    ------
+    ImportError
+        If HvPlot is not installed.
     """
     if not hvplot:
         raise ImportError(
@@ -296,8 +313,8 @@ def plot_diagnostics(
     ----------
     regridder : Regridder
         The Regridder instance to diagnose.
-    projection : cartopy.crs.Projection, optional
-        The projection for the axes.
+    projection : Any, optional
+        The projection for the axes. Defaults to ccrs.PlateCarree() if available.
     **kwargs : Any
         Additional arguments passed to plot_static.
 
@@ -305,6 +322,11 @@ def plot_diagnostics(
     -------
     matplotlib.figure.Figure
         The figure object.
+
+    Raises
+    ------
+    ImportError
+        If Matplotlib is not installed.
     """
     if plt is None:
         raise ImportError("Matplotlib is required for plot_diagnostics.")
@@ -363,9 +385,9 @@ def plot_comparison(
     regridder : Regridder, optional
         The regridder used to transform da_src to da_tgt.
         If provided, it will be used to calculate the difference plot correctly.
-    projection : cartopy.crs.Projection, optional
+    projection : Any, optional
         The projection for the axes.
-    transform : cartopy.crs.Projection, optional
+    transform : Any, optional
         The transform for the plot call.
     cmap : str, default 'viridis'
         Colormap for the data plots.
@@ -380,6 +402,11 @@ def plot_comparison(
     -------
     matplotlib.figure.Figure
         The figure object.
+
+    Raises
+    ------
+    ImportError
+        If Matplotlib is not installed.
     """
     if plt is None:
         raise ImportError("Matplotlib is required for plot_comparison.")
@@ -451,3 +478,86 @@ def plot_comparison(
 
     plt.tight_layout()
     return fig
+
+
+def plot_comparison_interactive(
+    da_src: xr.DataArray,
+    da_tgt: xr.DataArray,
+    regridder: Optional[Any] = None,
+    rasterize: bool = True,
+    cmap: str = "viridis",
+    diff_cmap: str = "RdBu_r",
+    title: Optional[str] = None,
+    **kwargs: Any,
+) -> Any:
+    """
+    Track B: Exploratory interactive comparison plot (Source, Target, Difference).
+
+    Uses HvPlot and HoloViews to provide a side-by-side interactive view.
+
+    Parameters
+    ----------
+    da_src : xr.DataArray
+        The source DataArray.
+    da_tgt : xr.DataArray
+        The target (regridded) DataArray.
+    regridder : Regridder, optional
+        The regridder used to transform da_src to da_tgt.
+        If provided, it will be used to calculate the difference plot correctly.
+    rasterize : bool, default True
+        Whether to rasterize the grid for large datasets (Aero Protocol requirement).
+    cmap : str, default 'viridis'
+        Colormap for the data plots.
+    diff_cmap : str, default 'RdBu_r'
+        Colormap for the difference plot.
+    title : str, optional
+        Overall plot title.
+    **kwargs : Any
+        Additional arguments passed to hvplot calls.
+
+    Returns
+    -------
+    Any
+        The composed HoloViews object (Layout).
+
+    Raises
+    ------
+    ImportError
+        If HvPlot or HoloViews is not installed.
+    """
+    if not hvplot or hv is None:
+        raise ImportError(
+            "HvPlot and HoloViews are required for plot_comparison_interactive. "
+            "Install them with `pip install hvplot holoviews`."
+        )
+
+    # 1. Source Plot
+    p_src = da_src.hvplot(rasterize=rasterize, cmap=cmap, title="Source Grid", **kwargs)
+
+    # 2. Target Plot
+    p_tgt = da_tgt.hvplot(rasterize=rasterize, cmap=cmap, title="Target Grid", **kwargs)
+
+    # 3. Difference Plot
+    try:
+        if regridder is not None:
+            da_src_interp = regridder(da_src)
+        else:
+            da_src_interp = da_src.interp_like(da_tgt, method="linear")
+
+        diff = da_tgt - da_src_interp
+        p_diff = diff.hvplot(
+            rasterize=rasterize,
+            cmap=diff_cmap,
+            title="Difference (Tgt - Src_interp)",
+            **kwargs,
+        )
+    except Exception as e:
+        # Fallback to a placeholder if difference computation fails
+        p_diff = hv.Text(0.5, 0.5, f"Could not compute difference:\n{e}")
+
+    layout = (p_src + p_tgt + p_diff).cols(3)
+
+    if title:
+        layout = layout.opts(title=title)
+
+    return layout
