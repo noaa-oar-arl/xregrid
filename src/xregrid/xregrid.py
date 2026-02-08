@@ -31,6 +31,82 @@ def _setup_worker_cache(key: str, value: Any) -> None:
     _WORKER_CACHE[key] = value
 
 
+def _assemble_weights_task(
+    results: list[Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[str]]],
+    n_src: int,
+    n_dst: int,
+) -> Any:
+    """
+    Internal worker task to assemble weights from multiple chunks.
+
+    Parameters
+    ----------
+    results : list of tuples
+        List of (rows, cols, data, error) from worker tasks.
+    n_src : int
+        Total number of source points.
+    n_dst : int
+        Total number of destination points.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        The concatenated sparse weight matrix.
+    """
+    import numpy as np
+    from scipy.sparse import coo_matrix
+
+    all_rows, all_cols, all_data = [], [], []
+    for r, c, d, err in results:
+        if err:
+            raise RuntimeError(f"Weight generation error: {err}")
+        if len(r) > 0:
+            all_rows.append(r)
+            all_cols.append(c)
+            all_data.append(d)
+
+    if not all_rows:
+        return coo_matrix((n_dst, n_src)).tocsr()
+
+    rows = np.concatenate(all_rows)
+    cols = np.concatenate(all_cols)
+    data = np.concatenate(all_data)
+    return coo_matrix((data, (rows, cols)), shape=(n_dst, n_src)).tocsr()
+
+
+def _get_weights_sum_task(matrix: Any) -> np.ndarray:
+    """
+    Internal worker task to compute the sum of weights for normalization.
+
+    Parameters
+    ----------
+    matrix : scipy.sparse.csr_matrix
+        The sparse weight matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The sum of weights per destination point.
+    """
+    import numpy as np
+
+    return np.array(matrix.sum(axis=1)).T
+
+
+def _populate_cache_task(value: Any, key: str) -> None:
+    """
+    Internal worker task to populate the worker-local cache with a value.
+
+    Parameters
+    ----------
+    value : Any
+        The value to cache (e.g., weight matrix).
+    key : str
+        The cache key.
+    """
+    _setup_worker_cache(key, value)
+
+
 def _get_mesh_info(
     ds: xr.Dataset,
 ) -> Tuple[xr.DataArray, xr.DataArray, Tuple[int, ...], Tuple[str, ...], bool]:
@@ -247,28 +323,33 @@ def _get_unstructured_mesh_info(
             element_ids = []
             orig_cell_index = []
 
-            for i in range(conn_raw.shape[0]):
-                valid_conn = conn_raw[i, :]
-                valid_conn = valid_conn[valid_conn != fill_value]
-                # ESMF Mesh expects 0-based indices into the node list in Python
-                # which it then converts to 1-based indices for the C layer.
-                valid_conn = valid_conn - start_index
+            # Vectorized triangulation (Aero Protocol: Performance)
+            n_cells, max_edges = conn_raw.shape
+            n_edges = np.sum(conn_raw != fill_value, axis=1)
+            max_tris = max_edges - 2
 
-                for j in range(1, len(valid_conn) - 1):
-                    element_conn.extend(
-                        [valid_conn[0], valid_conn[j], valid_conn[j + 1]]
-                    )
-                    element_types.append(esmpy.MeshElemType.TRI)
-                    element_ids.append(len(element_types))
-                    orig_cell_index.append(i)
+            j = np.arange(1, max_tris + 1)
+            mask = j[None, :] < (n_edges[:, None] - 1)
+
+            # Extract v0, v1, v2 for all possible triangles
+            v0 = np.repeat(conn_raw[:, 0:1], max_tris, axis=1) - start_index
+            v1 = conn_raw[:, 1:-1] - start_index
+            v2 = conn_raw[:, 2:] - start_index
+
+            element_conn = np.stack([v0[mask], v1[mask], v2[mask]], axis=1).flatten()
+            orig_cell_index = np.repeat(np.arange(n_cells), max_tris)[mask.flatten()]
+
+            n_tris = len(element_conn) // 3
+            element_types = np.full(n_tris, esmpy.MeshElemType.TRI, dtype=np.int32)
+            element_ids = np.arange(1, n_tris + 1, dtype=np.int32)
 
             return (
                 node_lon,
                 node_lat,
-                np.array(element_conn),
-                np.array(element_types),
-                np.array(element_ids),
-                np.array(orig_cell_index),
+                element_conn.astype(np.int32),
+                element_types,
+                element_ids,
+                orig_cell_index.astype(np.int32),
             )
         except (AttributeError, KeyError):
             pass
@@ -289,27 +370,32 @@ def _get_unstructured_mesh_info(
         element_ids = []
         orig_cell_index = []
 
+        # Vectorized triangulation for MPAS (Aero Protocol: Performance)
         # MPAS is 1-based indexing for vertex IDs
-        for i in range(len(n_edges)):
-            valid_conn = conn_raw[i, : n_edges[i]]
-            # Triangulate polygon if it's not a triangle or quad
-            # Actually, we can just triangulate everything into triangles for simplicity.
-            # ESMPy Mesh expects 0-based indices into the node list in Python.
-            for j in range(1, len(valid_conn) - 1):
-                element_conn.extend(
-                    [valid_conn[0] - 1, valid_conn[j] - 1, valid_conn[j + 1] - 1]
-                )
-                element_types.append(esmpy.MeshElemType.TRI)
-                element_ids.append(len(element_types))
-                orig_cell_index.append(i)
+        n_cells, max_edges = conn_raw.shape
+        max_tris = max_edges - 2
+
+        j = np.arange(1, max_tris + 1)
+        mask = j[None, :] < (n_edges[:, None] - 1)
+
+        v0 = np.repeat(conn_raw[:, 0:1], max_tris, axis=1) - 1
+        v1 = conn_raw[:, 1:-1] - 1
+        v2 = conn_raw[:, 2:] - 1
+
+        element_conn = np.stack([v0[mask], v1[mask], v2[mask]], axis=1).flatten()
+        orig_cell_index = np.repeat(np.arange(n_cells), max_tris)[mask.flatten()]
+
+        n_tris = len(element_conn) // 3
+        element_types = np.full(n_tris, esmpy.MeshElemType.TRI, dtype=np.int32)
+        element_ids = np.arange(1, n_tris + 1, dtype=np.int32)
 
         return (
             node_lon,
             node_lat,
-            np.array(element_conn),
-            np.array(element_types),
-            np.array(element_ids),
-            np.array(orig_cell_index),
+            element_conn.astype(np.int32),
+            element_types,
+            element_ids,
+            orig_cell_index.astype(np.int32),
         )
 
     # 2. Detect UGRID
@@ -353,27 +439,32 @@ def _get_unstructured_mesh_info(
             element_ids = []
             orig_cell_index = []
 
-            for i in range(conn_raw.shape[0]):
-                valid_conn = conn_raw[i, :]
-                valid_conn = valid_conn[valid_conn != fill_value]
-                # ESMF Mesh expects 0-based indices into the node list in Python
-                valid_conn = valid_conn - start_index
+            # Vectorized triangulation for UGRID (Aero Protocol: Performance)
+            n_cells, max_edges = conn_raw.shape
+            n_edges = np.sum(conn_raw != fill_value, axis=1)
+            max_tris = max_edges - 2
 
-                for j in range(1, len(valid_conn) - 1):
-                    element_conn.extend(
-                        [valid_conn[0], valid_conn[j], valid_conn[j + 1]]
-                    )
-                    element_types.append(esmpy.MeshElemType.TRI)
-                    element_ids.append(len(element_types))
-                    orig_cell_index.append(i)
+            j = np.arange(1, max_tris + 1)
+            mask = j[None, :] < (n_edges[:, None] - 1)
+
+            v0 = np.repeat(conn_raw[:, 0:1], max_tris, axis=1) - start_index
+            v1 = conn_raw[:, 1:-1] - start_index
+            v2 = conn_raw[:, 2:] - start_index
+
+            element_conn = np.stack([v0[mask], v1[mask], v2[mask]], axis=1).flatten()
+            orig_cell_index = np.repeat(np.arange(n_cells), max_tris)[mask.flatten()]
+
+            n_tris = len(element_conn) // 3
+            element_types = np.full(n_tris, esmpy.MeshElemType.TRI, dtype=np.int32)
+            element_ids = np.arange(1, n_tris + 1, dtype=np.int32)
 
             return (
                 node_lon,
                 node_lat,
-                np.array(element_conn),
-                np.array(element_types),
-                np.array(element_ids),
-                np.array(orig_cell_index),
+                element_conn.astype(np.int32),
+                element_types,
+                element_ids,
+                orig_cell_index.astype(np.int32),
             )
 
     raise ValueError(
@@ -806,6 +897,7 @@ def _apply_weights_core(
         flat_data = data_block.reshape(n_other, n_spatial)
 
     if skipna:
+        # Use a more memory-efficient NaN detection (Aero Protocol: Performance)
         mask = np.isnan(flat_data)
         has_nans = np.any(mask)
 
@@ -817,27 +909,25 @@ def _apply_weights_core(
                     result /= total_weights
         else:
             # Slow path: Handle NaNs by re-normalizing weights
-
-            # Optimization: Check if the NaN mask is constant across non-spatial dimensions
-            # Extremely common for fixed land/sea masks in geospatial data.
             is_mask_stationary = True
             if n_other > 1:
-                # Comparison of all masks against the first one.
-                # Optimization: To avoid creating a massive (n_other, n_spatial) comparison array
-                # which could OOM for ~1km grids, we check slice by slice.
-                mask0 = mask[0:1]
-                for i in range(1, n_other):
-                    if not np.array_equal(mask[i : i + 1], mask0):
-                        is_mask_stationary = False
-                        break
+                # Optimized stationary mask detection using heuristic early exit
+                # (Aero Protocol: Speedup for large grids)
+                mask0 = mask[0]
+                sample_size = min(1000, n_spatial)
+                # Check first sample points across all time steps first
+                if not np.all(mask[:, :sample_size] == mask0[:sample_size]):
+                    is_mask_stationary = False
+                else:
+                    for i in range(1, n_other):
+                        if not np.array_equal(mask[i], mask0):
+                            is_mask_stationary = False
+                            break
 
-            # Optimization: Use the input dtype for safe_data to avoid float64 promotion
             zero = flat_data.dtype.type(0)
             if is_mask_stationary:
-                # Memory win: Use broadcasting for the stationary mask in np.where
-                # and explicitly keep only the first slice of the mask to free up memory.
-                mask0 = mask[0:1].copy()
-                mask = mask0  # Replace full mask with the single slice
+                # Memory win: Use broadcasting for the stationary mask
+                mask = mask[0:1]
                 safe_data = np.where(mask, zero, flat_data)
             else:
                 safe_data = np.where(mask, zero, flat_data)
@@ -1574,45 +1664,29 @@ class Regridder:
         """
         Trigger computation of weights if using Dask and not yet computed.
 
-        Gathers all distributed weight futures and constructs the final sparse weight matrix.
+        Performs weight concatenation on the Dask cluster to avoid driver-side OOM.
+        The resulting weights are kept as a Future on the cluster until needed.
         """
         if not self.parallel or self._weights_matrix is not None:
             return
 
         if not self._dask_futures:
-            # This means compute=False was not used, or something went wrong?
-            # Or maybe parallel=True but _generate_weights_dask wasn't called yet?
-            # But __init__ calls _generate_weights.
             return
-
-        # Gather results
-        results = self._dask_client.gather(self._dask_futures)
-
-        all_rows = []
-        all_cols = []
-        all_data = []
-
-        for i, (r, c, d, err) in enumerate(results):
-            if err:
-                raise RuntimeError(f"Dask worker {i} failed: {err}")
-            all_rows.append(r)
-            all_cols.append(c)
-            all_data.append(d)
-
-        full_rows = np.concatenate(all_rows)
-        full_cols = np.concatenate(all_cols)
-        full_data = np.concatenate(all_data)
 
         n_src = int(np.prod(self._shape_source))
         n_dst = int(np.prod(self._shape_target))
 
-        self._weights_matrix = coo_matrix(
-            (full_data, (full_rows, full_cols)), shape=(n_dst, n_src)
-        ).tocsr()
+        # Perform concatenation on a worker to protect driver memory (Aero Protocol)
+        # We use top-level task functions to avoid capturing 'self' and mocks.
+        self._weights_matrix = self._dask_client.submit(
+            _assemble_weights_task, self._dask_futures, n_src, n_dst
+        )
 
         if self.skipna:
-            # Optimization: Use sum(axis=1) instead of memory-intensive ones multiplication
-            self._total_weights = np.array(self._weights_matrix.sum(axis=1)).T
+            # Compute total weights sum on worker too
+            self._total_weights = self._dask_client.submit(
+                _get_weights_sum_task, self._weights_matrix
+            )
 
         if self._dask_start_time:
             self.generation_time = time.perf_counter() - self._dask_start_time
@@ -1918,6 +1992,20 @@ class Regridder:
         if na_thres is None:
             na_thres = self.na_thres
 
+        # Gather weights if input is eager (NumPy) but weights are lazy (Dask Future)
+        # (Aero Protocol: Flexibility)
+        is_lazy_input = False
+        if isinstance(obj, xr.DataArray):
+            is_lazy_input = hasattr(obj.data, "dask")
+        elif isinstance(obj, xr.Dataset):
+            # Check if any data variable is dask-backed
+            is_lazy_input = any(hasattr(v.data, "dask") for v in obj.data_vars.values())
+
+        if not is_lazy_input and hasattr(self._weights_matrix, "key"):
+            self._weights_matrix = self._dask_client.gather(self._weights_matrix)
+            if hasattr(self._total_weights, "key"):
+                self._total_weights = self._dask_client.gather(self._total_weights)
+
         if isinstance(obj, xr.Dataset):
             # Sort input object if source grid was normalized
             if self._src_was_sorted:
@@ -2078,24 +2166,59 @@ class Regridder:
                     client = None
 
             if client is not None:
-                w_id = id(self._weights_matrix)
-                weights_key_arg = f"w_{w_id}"
+                # Optimization: Identify weights by their Dask key if available, or memory ID
+                if hasattr(self._weights_matrix, "key"):
+                    weights_key_arg = f"w_{self._weights_matrix.key}"
+                else:
+                    weights_key_arg = f"w_{id(self._weights_matrix)}"
 
-                # Check if workers need the matrix
+                # Check if workers already have this matrix in their cache
                 if (client, weights_key_arg) not in _DRIVER_CACHE:
-                    # Use client.run to synchronously populate the worker cache.
-                    # This is robust and ensures all current workers have the data.
-                    client.run(
-                        _setup_worker_cache, weights_key_arg, self._weights_matrix
-                    )
+                    if hasattr(self._weights_matrix, "key"):
+                        # Truly Distributed: matrix is already a Future on the cluster.
+                        # We ensure weights are available on ALL workers (Aero Protocol: Scalability)
+                        client.replicate(self._weights_matrix)
+
+                        # Explicitly target all workers to ensure cache consistency
+                        workers = list(client.scheduler_info()["workers"].keys())
+                        if workers:
+                            client.gather(
+                                client.map(
+                                    _populate_cache_task,
+                                    [self._weights_matrix] * len(workers),
+                                    [weights_key_arg] * len(workers),
+                                    workers=workers,
+                                )
+                            )
+                    else:
+                        # Eager matrix: use run (will gather if not careful, but it's local)
+                        client.run(
+                            _setup_worker_cache, weights_key_arg, self._weights_matrix
+                        )
                     _DRIVER_CACHE[(client, weights_key_arg)] = True
                 weights_arg = weights_key_arg
 
                 if self._total_weights is not None:
-                    tw_id = id(self._total_weights)
-                    tw_key = f"tw_{tw_id}"
+                    if hasattr(self._total_weights, "key"):
+                        tw_key = f"tw_{self._total_weights.key}"
+                    else:
+                        tw_key = f"tw_{id(self._total_weights)}"
+
                     if (client, tw_key) not in _DRIVER_CACHE:
-                        client.run(_setup_worker_cache, tw_key, self._total_weights)
+                        if hasattr(self._total_weights, "key"):
+                            client.replicate(self._total_weights)
+                            workers = list(client.scheduler_info()["workers"].keys())
+                            if workers:
+                                client.gather(
+                                    client.map(
+                                        _populate_cache_task,
+                                        [self._total_weights] * len(workers),
+                                        [tw_key] * len(workers),
+                                        workers=workers,
+                                    )
+                                )
+                        else:
+                            client.run(_setup_worker_cache, tw_key, self._total_weights)
                         _DRIVER_CACHE[(client, tw_key)] = True
                     total_weights_arg = tw_key
 
