@@ -90,7 +90,8 @@ def _get_weights_sum_task(matrix: Any) -> np.ndarray:
     """
     import numpy as np
 
-    return np.array(matrix.sum(axis=1)).T
+    # Return flattened 1D array (n_dst,) for easier reshaping and broadcasting
+    return np.array(matrix.sum(axis=1)).flatten()
 
 
 def _populate_cache_task(value: Any, key: str) -> None:
@@ -1488,7 +1489,7 @@ class Regridder:
 
         if self.skipna:
             # Optimization: Use sum(axis=1) instead of memory-intensive ones multiplication
-            self._total_weights = np.array(self._weights_matrix.sum(axis=1)).T
+            self._total_weights = np.array(self._weights_matrix.sum(axis=1)).flatten()
 
         self.generation_time = time.perf_counter() - start_time
 
@@ -1703,11 +1704,11 @@ class Regridder:
         if esmpy.local_pet() != 0:
             return  # Only rank 0 saves weights
 
-        if self._weights_matrix is None:
-            raise RuntimeError("Weights have not been generated yet.")
+        # Use weights property to ensure they are gathered if remote
+        weights_matrix = self.weights
 
         # Convert to COO to access row and col attributes
-        weights_coo = self._weights_matrix.tocoo()
+        weights_coo = weights_matrix.tocoo()
 
         ds_weights = xr.Dataset(
             data_vars={
@@ -1780,7 +1781,30 @@ class Regridder:
 
         if self.skipna:
             # Optimization: Use sum(axis=1) instead of memory-intensive ones multiplication
-            self._total_weights = np.array(self._weights_matrix.sum(axis=1)).T
+            self._total_weights = np.array(self._weights_matrix.sum(axis=1)).flatten()
+
+    @property
+    def weights(self) -> Any:
+        """
+        Get the sparse weight matrix, gathering it from the cluster if necessary.
+
+        Returns
+        -------
+        scipy.sparse.csr_matrix
+            The regridding weight matrix.
+        """
+        if self._weights_matrix is None:
+            if self.parallel and self._dask_futures:
+                self.compute()
+            else:
+                raise RuntimeError("Weights have not been generated yet.")
+
+        if hasattr(self._weights_matrix, "key"):
+            self._weights_matrix = self._dask_client.gather(self._weights_matrix)
+            if hasattr(self._total_weights, "key"):
+                self._total_weights = self._dask_client.gather(self._total_weights)
+
+        return self._weights_matrix
 
     def diagnostics(self) -> xr.Dataset:
         """
@@ -1796,13 +1820,33 @@ class Regridder:
         if self._weights_matrix is None:
             raise RuntimeError("Weights have not been generated yet.")
 
-        # Sum weights for each destination row
-        weights_sum = np.array(self._weights_matrix.sum(axis=1)).flatten()
-        unmapped = (weights_sum == 0).astype(np.int8)
+        if hasattr(self._weights_matrix, "key"):
+            # Aero Protocol: Distributed lazy diagnostics
+            import dask.array as da
+            import dask.distributed
 
-        # Reshape to target grid shape
-        weights_sum_2d = weights_sum.reshape(self._shape_target)
-        unmapped_2d = unmapped.reshape(self._shape_target)
+            if self._total_weights is None:
+                self._total_weights = self._dask_client.submit(
+                    _get_weights_sum_task, self._weights_matrix
+                )
+
+            # Convert Future to Dask array to preserve laziness
+            n_dst = int(np.prod(self._shape_target))
+
+            weights_sum_da = da.from_delayed(
+                dask.delayed(self._total_weights), shape=(n_dst,), dtype=np.float64
+            )
+
+            weights_sum_2d = weights_sum_da.reshape(self._shape_target)
+            unmapped_2d = (weights_sum_2d == 0).astype(np.int8)
+        else:
+            # Eager diagnostics
+            weights_sum = np.array(self._weights_matrix.sum(axis=1)).flatten()
+            unmapped = (weights_sum == 0).astype(np.int8)
+
+            # Reshape to target grid shape
+            weights_sum_2d = weights_sum.reshape(self._shape_target)
+            unmapped_2d = unmapped.reshape(self._shape_target)
 
         ds = xr.Dataset(
             data_vars={
@@ -1850,12 +1894,22 @@ class Regridder:
         if self._weights_matrix is None:
             raise RuntimeError("Weights have not been generated yet.")
 
-        n_dst, n_src = self._weights_matrix.shape
+        # If remote, we must gather for a report (which is typically eager)
+        # unless skip_heavy is True and we can get metadata from the Future
+        if hasattr(self._weights_matrix, "key") and not skip_heavy:
+            # Force gather to compute metrics
+            self.weights
+
+        n_src = int(np.prod(self._shape_source))
+        n_dst = int(np.prod(self._shape_target))
+
+        # Check if still remote after potential gather
+        is_remote = hasattr(self._weights_matrix, "key")
 
         report = {
             "n_src": n_src,
             "n_dst": n_dst,
-            "n_weights": int(self._weights_matrix.nnz),
+            "n_weights": int(self._weights_matrix.nnz) if not is_remote else -1,
             "method": self.method,
             "periodic": self.periodic,
         }
@@ -1906,10 +1960,10 @@ class Regridder:
         xr.Dataset
             Dataset containing 'row', 'col', and 'S' (weights).
         """
-        if self._weights_matrix is None:
-            raise RuntimeError("Weights have not been generated yet.")
+        # Use weights property to ensure they are gathered if remote
+        weights_matrix = self.weights
 
-        weights_coo = self._weights_matrix.tocoo()
+        weights_coo = weights_matrix.tocoo()
         ds = xr.Dataset(
             data_vars={
                 "row": (["n_s"], weights_coo.row + 1),
@@ -1940,10 +1994,14 @@ class Regridder:
         quality_str = "quality=deferred"
         n_dst = int(np.prod(self._shape_target)) if self._shape_target else 0
 
-        # Optimization: Avoid expensive quality report for massive grids (Aero Protocol)
-        if n_dst > 0:
+        # Aero Protocol: Avoid remote calls and expensive reports in __repr__
+        is_remote = hasattr(self._weights_matrix, "key")
+        if is_remote:
+            quality_str = "quality=lazy"
+        elif n_dst > 0:
             try:
                 if n_dst < 1_000_000:
+                    # Only show quality if already eager and not too massive
                     report = self.quality_report()
                     quality_str = f"unmapped={report['unmapped_fraction']:.2%}"
                 else:
@@ -2072,7 +2130,16 @@ class Regridder:
         # If skipna is True, we need _total_weights.
         # If it was not computed during init, compute it now.
         if skipna and self._total_weights is None and self._weights_matrix is not None:
-            self._total_weights = np.array(self._weights_matrix.sum(axis=1)).T
+            if hasattr(self._weights_matrix, "key"):
+                # Distributed path: compute total weights on cluster
+                self._total_weights = self._dask_client.submit(
+                    _get_weights_sum_task, self._weights_matrix
+                )
+            else:
+                # Eager path: compute locally and flatten to 1D
+                self._total_weights = np.array(
+                    self._weights_matrix.sum(axis=1)
+                ).flatten()
 
         # Identify auxiliary coordinates that need regridding (Aero Protocol: Scientific Hygiene)
         aux_coords_to_regrid = {}
