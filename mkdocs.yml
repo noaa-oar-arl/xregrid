@@ -1,10 +1,10 @@
 site_name: XRegrid Documentation
-site_url: https://xregrid.readthedocs.io
+site_url: https://noaa-oar-arl.github.io/xregrid
 site_author: XRegrid Contributors
 site_description: An optimized ESMF-based regridder for xarray
 
-repo_name: xregrid/xregrid
-repo_url: https://github.com/xregrid/xregrid
+repo_name: noaa-oar-arl/xregrid
+repo_url: https://github.com/noaa-oar-arl/xregrid
 
 nav:
   - Home: index.md
