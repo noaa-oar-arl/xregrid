@@ -221,11 +221,12 @@ def _get_mesh_info(
         raise ValueError("Latitude and longitude must be 1D or 2D.")
 
 
-def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
+def _bounds_to_vertices(b: xr.DataArray) -> Union[xr.DataArray, np.ndarray]:
     """
     Convert cell boundary coordinates (bounds) to vertex coordinates for ESMF.
 
-    Supports both 1D and 2D bounds.
+    Supports both 1D and 2D bounds, and 3D curvilinear bounds.
+    Backend-agnostic (Aero Protocol): stays lazy if input is a Dask array.
 
     Parameters
     ----------
@@ -234,26 +235,48 @@ def _bounds_to_vertices(b: xr.DataArray) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray
+    xr.DataArray or np.ndarray
         The vertex coordinate array.
     """
     if b.ndim == 2 and b.shape[-1] == 2:
-        return np.concatenate([b.values[:, 0], b.values[-1:, 1]])
+        # 1D coordinates with bounds (N, 2) -> (N+1,) vertices
+        return xr.concat(
+            [
+                b.isel({b.dims[-1]: 0}),
+                b.isel({b.dims[-1]: 1}).isel({b.dims[0]: slice(-1, None)}),
+            ],
+            dim=b.dims[0],
+        )
     elif b.ndim == 3 and b.shape[-1] == 4:
-        y_size, x_size, _ = b.shape
-        vals = b.values
-        res = np.empty((y_size + 1, x_size + 1))
-        res[:-1, :-1] = vals[:, :, 0]
-        res[:-1, -1] = vals[:, -1, 1]
-        res[-1, -1] = vals[-1, -1, 2]
-        res[-1, :-1] = vals[-1, :, 3]
-        return res
-    return b.values
+        # 2D curvilinear bounds (Y, X, 4) -> (Y+1, X+1) vertices
+        v0 = b.isel({b.dims[-1]: 0})  # (y, x)
+        v1_last_col = b.isel({b.dims[-1]: 1}).isel(
+            {b.dims[1]: slice(-1, None)}
+        )  # (y, 1)
+
+        row_block = xr.concat([v0, v1_last_col], dim=b.dims[1])  # (y, x+1)
+
+        v3_last_row = b.isel({b.dims[-1]: 3}).isel(
+            {b.dims[0]: slice(-1, None)}
+        )  # (1, x)
+        v2_last_corner = b.isel({b.dims[-1]: 2}).isel(
+            {b.dims[0]: slice(-1, None), b.dims[1]: slice(-1, None)}
+        )  # (1, 1)
+
+        last_row_block = xr.concat(
+            [v3_last_row, v2_last_corner], dim=b.dims[1]
+        )  # (1, x+1)
+
+        return xr.concat([row_block, last_row_block], dim=b.dims[0])  # (y+1, x+1)
+
+    return b
 
 
 def _get_grid_bounds(
     ds: xr.Dataset,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+) -> Tuple[
+    Optional[Union[xr.DataArray, np.ndarray]], Optional[Union[xr.DataArray, np.ndarray]]
+]:
     """
     Extract grid cell boundaries from a dataset using cf-xarray or standard names.
 
@@ -275,13 +298,7 @@ def _get_grid_bounds(
         return _bounds_to_vertices(lat_b_da), _bounds_to_vertices(lon_b_da)
     except (KeyError, AttributeError, ValueError):
         if "lat_b" in ds and "lon_b" in ds:
-            lat_b = (
-                ds["lat_b"].values if hasattr(ds["lat_b"], "values") else ds["lat_b"]
-            )
-            lon_b = (
-                ds["lon_b"].values if hasattr(ds["lon_b"], "values") else ds["lon_b"]
-            )
-            return lat_b, lon_b
+            return ds["lat_b"], ds["lon_b"]
     return None, None
 
 
@@ -1290,7 +1307,7 @@ class Regridder:
         """
         return _get_mesh_info(ds)
 
-    def _bounds_to_vertices(self, b: xr.DataArray) -> np.ndarray:
+    def _bounds_to_vertices(self, b: xr.DataArray) -> Union[xr.DataArray, np.ndarray]:
         """
         Instance-level wrapper for _bounds_to_vertices.
         """
@@ -2016,6 +2033,26 @@ class Regridder:
             f"periodic={self.periodic}, "
             f"{quality_str})"
         )
+
+    def plot_weights(self, row_idx: int, **kwargs: Any) -> Any:
+        """
+        Track A: Visualize source points contributing to a specific destination point.
+
+        Parameters
+        ----------
+        row_idx : int
+            The index of the destination point (0-based).
+        **kwargs : Any
+            Additional arguments passed to plot_static.
+
+        Returns
+        -------
+        Any
+            The plot object.
+        """
+        from .viz import plot_weights as _plot_weights
+
+        return _plot_weights(self, row_idx, **kwargs)
 
     def __call__(
         self,

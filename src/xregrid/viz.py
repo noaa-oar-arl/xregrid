@@ -566,3 +566,48 @@ def plot_comparison_interactive(
         layout = layout.opts(title=title)
 
     return layout
+
+
+def plot_weights(
+    regridder: "Regridder",
+    row_idx: int,
+    **kwargs: Any,
+) -> Any:
+    """
+    Track A: Visualize source points contributing to a specific destination point.
+
+    Parameters
+    ----------
+    regridder : Regridder
+        The Regridder instance.
+    row_idx : int
+        The index of the destination point (0-based).
+    **kwargs : Any
+        Additional arguments passed to plot_static.
+
+    Returns
+    -------
+    Any
+        The plot object.
+    """
+    # Use weights property to ensure they are gathered if remote
+    matrix = regridder.weights
+    row = matrix.getrow(row_idx).toarray().flatten()
+
+    # Reconstruct 2D/1D array on source grid
+    da_weights = xr.DataArray(
+        row.reshape(regridder._shape_source),
+        dims=regridder._dims_source,
+        coords={
+            c: regridder.source_grid_ds.coords[c]
+            for c in regridder.source_grid_ds.coords
+            if set(regridder.source_grid_ds.coords[c].dims).issubset(
+                set(regridder._dims_source)
+            )
+        },
+        name="weights",
+    )
+
+    return plot_static(
+        da_weights, title=f"Weights for Destination Point {row_idx}", **kwargs
+    )
