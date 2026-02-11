@@ -18,8 +18,9 @@ def test_create_global_grid():
     assert ds.lon.size == 18  # 360 / 20
     assert "lat_b" in ds
     assert "lon_b" in ds
-    assert ds.lat_b.size == 19
-    assert ds.lon_b.size == 19
+    # New (N, 2) bounds format
+    assert ds.lat_b.shape == (18, 2)
+    assert ds.lon_b.shape == (18, 2)
     assert ds.lat.attrs["standard_name"] == "latitude"
     assert ds.lon.attrs["standard_name"] == "longitude"
     assert "history" in ds.attrs
@@ -34,8 +35,8 @@ def test_create_regional_grid():
     assert ds.lat.min() == -42.5
     assert ds.lat.max() == 42.5
     assert "lat_b" in ds
-    assert ds.lat_b.min() == -45
-    assert ds.lat_b.max() == 45
+    assert np.isclose(ds.lat_b.min(), -45)
+    assert np.isclose(ds.lat_b.max(), 45)
 
 
 def test_load_esmf_file(tmp_path):
@@ -66,8 +67,9 @@ def test_create_grid_from_crs():
 
     assert "lat_b" in ds
     assert "lon_b" in ds
-    assert ds.lat_b.ndim == 2
-    assert ds.lat_b.shape == (11, 11)
+    # New (Y, X, 4) bounds format for curvilinear
+    assert ds.lat_b.ndim == 3
+    assert ds.lat_b.shape == (10, 10, 4)
 
     assert "crs" in ds.attrs
     assert "history" in ds.attrs

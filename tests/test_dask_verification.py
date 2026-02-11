@@ -11,8 +11,13 @@ def setup_worker_mock():
     import sys
     import numpy as np
 
-    if "esmpy" in sys.modules and not isinstance(sys.modules["esmpy"], MagicMock):
-        return
+    try:
+        import esmpy
+
+        if not isinstance(esmpy, MagicMock):
+            return
+    except ImportError:
+        pass
 
     mock_esmpy = MagicMock()
     mock_esmpy.CoordSys.SPH_DEG = 1
@@ -72,20 +77,20 @@ def test_dask_parallel_regridding():
         regridder_serial = Regridder(
             source_grid, target_grid, method="bilinear", parallel=False
         )
-        w_serial = regridder_serial._weights_matrix
+        w_serial = regridder_serial.weights
 
         # 2a. Generate weights in parallel (Eager)
         print(f"Using Dask Client: {client}")
         regridder_eager = Regridder(
             source_grid, target_grid, method="bilinear", parallel=True, compute=True
         )
-        w_eager = regridder_eager._weights_matrix
+        w_eager = regridder_eager.weights
 
         # 3a. Compare Eager
         assert w_serial.shape == w_eager.shape
         # Note: Weights might differ in mock environment due to multiple chunks
         # returning the same mock weight. In real ESMF, these would match.
-        if not isinstance(esmpy, MagicMock):
+        if not (isinstance(esmpy, MagicMock) or hasattr(esmpy, "_is_mock")):
             assert w_serial.nnz == w_eager.nnz
             diff_eager = w_serial - w_eager
             assert np.abs(diff_eager.data).max() < 1e-10 if diff_eager.nnz > 0 else True
@@ -98,21 +103,21 @@ def test_dask_parallel_regridding():
         # Verify persist mechanism (should just return self)
         assert regridder_lazy.persist() is regridder_lazy
 
-        # Verify it hasn't computed yet
+        # Verify it hasn't computed yet (it uses internal attribute for this check)
         assert regridder_lazy._weights_matrix is None
         assert regridder_lazy._dask_futures is not None
 
         # Trigger compute
         print("Triggering compute on lazy regridder...")
         regridder_lazy.compute()
-        w_lazy = regridder_lazy._weights_matrix
+        w_lazy = regridder_lazy.weights
 
         assert w_lazy is not None
         assert regridder_lazy._dask_futures is None  # should be cleared
 
         # 3b. Compare Lazy
         assert w_serial.shape == w_lazy.shape
-        if not isinstance(esmpy, MagicMock):
+        if not (isinstance(esmpy, MagicMock) or hasattr(esmpy, "_is_mock")):
             assert w_serial.nnz == w_lazy.nnz
             diff_lazy = w_serial - w_lazy
             assert np.abs(diff_lazy.data).max() < 1e-10 if diff_lazy.nnz > 0 else True

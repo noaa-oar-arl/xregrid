@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import os
 import socket
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import numpy as np
 import pyproj
@@ -301,15 +301,36 @@ def create_grid_from_crs(
     ds.attrs["crs"] = crs_obj.to_wkt()
 
     if add_bounds:
-        # Derive bounds from center points to ensure alignment
-        x_b = np.concatenate([[x[0] - res_x / 2], x + res_x / 2])
-        y_b = np.concatenate([[y[0] - res_y / 2], y + res_y / 2])
+        # Create CF-compliant curvilinear bounds (Y, X, 4)
+        # This ensures bounds are sliced correctly with centers (Aero Protocol: Scientific Hygiene)
 
-        xx_b, yy_b = np.meshgrid(x_b, y_b)
+        # (4, Y, X)
+        yy_corners, xx_corners = np.meshgrid(y, x, indexing="ij")
+        # We need to broadcast the corners to (4, Y, X)
+        xx_b = np.stack(
+            [
+                np.broadcast_to(x - res_x / 2, (len(y), len(x))),
+                np.broadcast_to(x + res_x / 2, (len(y), len(x))),
+                np.broadcast_to(x + res_x / 2, (len(y), len(x))),
+                np.broadcast_to(x - res_x / 2, (len(y), len(x))),
+            ]
+        )
+        yy_b = np.stack(
+            [
+                np.broadcast_to(y - res_y / 2, (len(x), len(y))).T,
+                np.broadcast_to(y - res_y / 2, (len(x), len(y))).T,
+                np.broadcast_to(y + res_y / 2, (len(x), len(y))).T,
+                np.broadcast_to(y + res_y / 2, (len(x), len(y))).T,
+            ]
+        )
+
         lon_b, lat_b = transformer.transform(xx_b, yy_b)
+        # Reshape to (Y, X, 4)
+        lat_b = np.moveaxis(lat_b, 0, -1)
+        lon_b = np.moveaxis(lon_b, 0, -1)
 
-        ds.coords["lat_b"] = (["y_b", "x_b"], lat_b, {"units": "degrees_north"})
-        ds.coords["lon_b"] = (["y_b", "x_b"], lon_b, {"units": "degrees_east"})
+        ds.coords["lat_b"] = (["y", "x", "nv"], lat_b, {"units": "degrees_north"})
+        ds.coords["lon_b"] = (["y", "x", "nv"], lon_b, {"units": "degrees_east"})
 
         ds["lat"].attrs["bounds"] = "lat_b"
         ds["lon"].attrs["bounds"] = "lon_b"
@@ -369,8 +390,8 @@ def create_mesh_from_coords(
 def get_rdhpcs_cluster(
     machine: Optional[str] = None,
     account: Optional[str] = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """
     Create a dask-jobqueue SLURMCluster for NOAA RDHPCS systems.
 

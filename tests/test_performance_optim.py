@@ -13,7 +13,8 @@ def test_stationary_mask_caching(mocker):
     _WORKER_CACHE.clear()
 
     # Mock _matmul to count calls
-    mock_matmul = mocker.patch("xregrid.xregrid._matmul", side_effect=_matmul)
+    # Note: we patch the core module since that's where the active reference is
+    mock_matmul = mocker.patch("xregrid.core._matmul", side_effect=_matmul)
 
     # Create small synthetic data
     # 2 time steps, 4x4 grid -> 2x2 target
@@ -81,9 +82,9 @@ def test_memory_efficiency_broadcasting():
 
 def test_dask_stationary_mask_caching(mocker):
     """Verify stationary mask caching works with Dask-backed data."""
-    from xregrid.xregrid import Regridder
+    from xregrid.regridder import Regridder
 
-    # Setup local cluster with processes=False so it uses our mocked esmpy/modules
+    # Setup local cluster with processes=False so it uses our modules
     cluster = dask.distributed.LocalCluster(
         n_workers=1, threads_per_worker=1, processes=False
     )
@@ -91,7 +92,7 @@ def test_dask_stationary_mask_caching(mocker):
 
     try:
         _WORKER_CACHE.clear()
-        mock_matmul = mocker.patch("xregrid.xregrid._matmul", side_effect=_matmul)
+        mock_matmul = mocker.patch("xregrid.core._matmul", side_effect=_matmul)
 
         # Identity-like weight matrix
         weights = csr_matrix(np.eye(4, 16))
@@ -107,9 +108,9 @@ def test_dask_stationary_mask_caching(mocker):
         ds_dst = xr.Dataset(coords={"lat": np.arange(2), "lon": np.arange(2)})
 
         # Mock Regridder internally to avoid actual ESMF calls
-        mocker.patch("xregrid.xregrid.Regridder._generate_weights", return_value=None)
+        mocker.patch("xregrid.regridder.Regridder._generate_weights", return_value=None)
         mocker.patch(
-            "xregrid.xregrid._get_mesh_info",
+            "xregrid.regridder.Regridder._get_mesh_info",
             side_effect=[
                 (MagicMock(), MagicMock(), (4, 4), ("lat", "lon"), False),
                 (MagicMock(), MagicMock(), (2, 2), ("lat", "lon"), False),

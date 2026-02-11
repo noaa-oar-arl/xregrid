@@ -71,7 +71,19 @@ def setup_driver_mock():
     sys.modules["esmpy"] = mock_esmpy
 
 
-setup_driver_mock()
+# Initialize mock only if real esmpy is not available
+try:
+    import esmpy
+
+    # Check if it's already a mock from conftest
+    if hasattr(esmpy, "_is_mock") or "unittest.mock" in str(type(esmpy)):
+        raise ImportError
+    HAS_REAL_ESMF = True
+except ImportError:
+    HAS_REAL_ESMF = False
+
+if not HAS_REAL_ESMF:
+    setup_driver_mock()
 
 from xregrid import Regridder, create_global_grid  # noqa: E402
 
@@ -106,16 +118,24 @@ class UxDatasetMock:
 
 def test_uxarray_support():
     # 1. Create a mocked uxarray object
+    # For real ESMF, all nodes must be used in connectivity.
+    # We'll create a simple strip of 10 triangles using 12 nodes.
     n_face = 10
-    n_node = 20
+    n_node = 12
 
     mock_uxgrid = MagicMock()
     mock_uxgrid.node_lat = xr.DataArray(np.linspace(-90, 90, n_node), dims=["n_node"])
     mock_uxgrid.node_lon = xr.DataArray(np.linspace(0, 360, n_node), dims=["n_node"])
     mock_uxgrid.face_lat = xr.DataArray(np.linspace(-90, 90, n_face), dims=["n_face"])
     mock_uxgrid.face_lon = xr.DataArray(np.linspace(0, 360, n_face), dims=["n_face"])
+
+    # Create connectivity: (0,1,2), (1,2,3), (2,3,4), ...
+    conn = np.zeros((n_face, 3), dtype=int)
+    for i in range(n_face):
+        conn[i] = [i, i + 1, i + 2]
+
     mock_uxgrid.face_node_connectivity = xr.DataArray(
-        np.random.randint(0, n_node, (n_face, 3)), dims=["n_face", "n_max_face_nodes"]
+        conn, dims=["n_face", "n_max_face_nodes"]
     )
     mock_uxgrid.face_node_connectivity.attrs["start_index"] = 0
     mock_uxgrid.face_node_connectivity.attrs["_FillValue"] = -1

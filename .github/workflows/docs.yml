@@ -43,6 +43,17 @@ jobs:
         run: |
           micromamba run -n xregrid-env pip install -e .
 
+      - name: Pre-fetch tutorial data
+        shell: bash -l {0}
+        run: |
+          # Pre-download tutorial datasets used in examples to avoid network timeouts during doc build
+          # (Aero Protocol: Robust CI)
+          for i in {1..5}; do
+            micromamba run -n xregrid-env python -c "import xarray as xr; \
+            datasets = ['rasm', 'air_temperature', 'eraint_uvz', 'ROMS_example']; \
+            [xr.tutorial.open_dataset(name) for name in datasets]" && break || sleep 30;
+          done
+
       - name: Build documentation
         shell: bash -l {0}
         run: |

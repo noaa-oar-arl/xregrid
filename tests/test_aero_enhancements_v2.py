@@ -62,9 +62,9 @@ def test_conservative_with_dask_bounds(method):
     ds_src = create_global_grid(30, 30)
     ds_tgt = create_global_grid(60, 60)
 
-    # Chunk bounds
-    ds_src["lat_b"] = ds_src["lat_b"].chunk({"lat_b": 5})
-    ds_src["lon_b"] = ds_src["lon_b"].chunk({"lon_b": 5})
+    # Chunk bounds (using new dimension names from normalization)
+    ds_src["lat_b"] = ds_src["lat_b"].chunk({"lat": 5})
+    ds_src["lon_b"] = ds_src["lon_b"].chunk({"lon": 5})
 
     # This should not trigger compute until absolutely necessary (inside ESMPy)
     regridder = Regridder(ds_src, ds_tgt, method=method)

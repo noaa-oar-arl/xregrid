@@ -75,8 +75,19 @@ def setup_driver_mock():
     sys.modules["esmpy"] = mock_esmpy
 
 
-# Initialize mock before importing anything from xregrid
-setup_driver_mock()
+# Initialize mock only if real esmpy is not available
+try:
+    import esmpy
+
+    # Check if it's already a mock from conftest
+    if hasattr(esmpy, "_is_mock") or "unittest.mock" in str(type(esmpy)):
+        raise ImportError
+    HAS_REAL_ESMF = True
+except ImportError:
+    HAS_REAL_ESMF = False
+
+if not HAS_REAL_ESMF:
+    setup_driver_mock()
 
 from xregrid import Regridder, create_global_grid, create_mesh_from_coords  # noqa: E402
 
@@ -157,11 +168,13 @@ def setup_worker_mock():
 
 @pytest.fixture(scope="module")
 def dask_client():
+    # esmpy is not thread-safe, so we must use processes=True when using real ESMF
     cluster = dask.distributed.LocalCluster(
-        n_workers=2, threads_per_worker=1, processes=False
+        n_workers=2, threads_per_worker=1, processes=True
     )
     client = dask.distributed.Client(cluster)
-    client.run(setup_worker_mock)
+    if not HAS_REAL_ESMF:
+        client.run(setup_worker_mock)
     yield client
     client.close()
     cluster.close()

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import xarray as xr
 
 if TYPE_CHECKING:
-    from .xregrid import Regridder
+    from xregrid.regridder import Regridder
 
 try:
     import matplotlib.pyplot as plt

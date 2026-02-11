@@ -87,15 +87,30 @@ def setup_mock_esmpy():
     sys.modules["esmpy"] = mock
 
 
-setup_mock_esmpy()
+# Initialize mock only if real esmpy is not available
+try:
+    import esmpy
+
+    if hasattr(esmpy, "_is_mock") or "unittest.mock" in str(type(esmpy)):
+        raise ImportError
+    HAS_REAL_ESMF = True
+except ImportError:
+    HAS_REAL_ESMF = False
+
+if not HAS_REAL_ESMF:
+    setup_mock_esmpy()
+
 from xregrid import Regridder, create_global_grid  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def dask_client():
-    # Use processes=False to avoid pickling issues with mocks in this environment
+    # esmpy is not thread-safe, so we must use processes=True when using real ESMF
+    # For CI stability, we use a single worker if using real ESMF
     cluster = dask.distributed.LocalCluster(
-        n_workers=2, threads_per_worker=1, processes=False
+        n_workers=1 if HAS_REAL_ESMF else 2,
+        threads_per_worker=1,
+        processes=HAS_REAL_ESMF,
     )
     client = dask.distributed.Client(cluster)
     yield client

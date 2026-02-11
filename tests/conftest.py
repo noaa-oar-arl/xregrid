@@ -3,10 +3,21 @@ from unittest.mock import MagicMock
 import numpy as np
 
 try:
-    import esmpy  # noqa: F401
-except ImportError:
+    import esmpy
+
+    # Verify it's actually working
+    esmpy.Manager(debug=False)
+    HAS_REAL_ESMF = True
+    print("\n--- Real ESMF detected in conftest.py ---")
+except (ImportError, Exception) as e:
+    HAS_REAL_ESMF = False
+    print(f"\n--- Real ESMF NOT detected in conftest.py: {e} ---")
+
+if not HAS_REAL_ESMF:
     mock_esmpy = MagicMock()
+    mock_esmpy._is_mock = True
     mock_esmpy.CoordSys.SPH_DEG = 1
+    mock_esmpy.CoordSys.CART = 0
     mock_esmpy.StaggerLoc.CENTER = 0
     mock_esmpy.StaggerLoc.CORNER = 1
     mock_esmpy.GridItem.MASK = 1
@@ -25,6 +36,7 @@ except ImportError:
     mock_esmpy.MeshElemType.QUAD = 2
     mock_esmpy.NormType.FRACAREA = 0
     mock_esmpy.NormType.DSTAREA = 1
+    mock_esmpy.LogKind.MULTI = 1
 
     # Mock Manager
     mock_esmpy.Manager.return_value = MagicMock()
@@ -39,6 +51,9 @@ except ImportError:
             self.add_item = MagicMock()
             self.staggerloc = [0, 1]
 
+        def destroy(self):
+            pass
+
     mock_esmpy.Grid = Grid
 
     class LocStream:
@@ -47,6 +62,9 @@ except ImportError:
 
         def __setitem__(self, key, value):
             self.items[key] = value
+
+        def destroy(self):
+            pass
 
     mock_esmpy.LocStream = LocStream
 
@@ -61,21 +79,39 @@ except ImportError:
         def add_elements(self, *args, **kwargs):
             pass
 
+        def destroy(self):
+            pass
+
     mock_esmpy.Mesh = Mesh
 
     # Mock Field
-    mock_esmpy.Field.return_value = MagicMock()
+    class Field:
+        def __init__(self, *args, **kwargs):
+            self.name = kwargs.get("name", "field")
+
+        def destroy(self):
+            pass
+
+    mock_esmpy.Field = Field
 
     # Mock Regrid
-    mock_regrid = MagicMock()
-    mock_regrid.get_factors.return_value = (np.array([0]), np.array([0]))
-    # Mock weights for a small 10x20 -> 15x25 regrid
-    # n_src = 200, n_dst = 375
-    mock_regrid.get_weights_dict.return_value = {
-        "row_dst": np.array([1]),
-        "col_src": np.array([1]),
-        "weights": np.array([1.0]),
-    }
-    mock_esmpy.Regrid.return_value = mock_regrid
+    class Regrid:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_factors(self):
+            return (np.array([0]), np.array([0]))
+
+        def get_weights_dict(self, deep_copy=True):
+            return {
+                "row_dst": np.array([1]),
+                "col_src": np.array([1]),
+                "weights": np.array([1.0]),
+            }
+
+        def destroy(self):
+            pass
+
+    mock_esmpy.Regrid = Regrid
 
     sys.modules["esmpy"] = mock_esmpy

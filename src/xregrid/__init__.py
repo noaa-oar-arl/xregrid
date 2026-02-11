@@ -1,4 +1,4 @@
-from .utils import (
+from xregrid.utils import (
     create_global_grid,
     create_grid_from_crs,
     create_mesh_from_coords,
