@@ -1226,6 +1226,39 @@ class Regridder:
 
         return _plot_weights(self, row_idx, **kwargs)
 
+    def plot_diagnostics(self, mode: str = "static", **kwargs: Any) -> Any:
+        """
+        Visualize spatial diagnostics of the regridding weights.
+
+        Follows the Aero Protocol's Two-Track Rule:
+        - mode='static' (Track A): Publication-quality plot using Matplotlib/Cartopy.
+        - mode='interactive' (Track B): Exploratory plot using HvPlot/HoloViews.
+
+        Parameters
+        ----------
+        mode : str, default 'static'
+            The plotting mode: 'static' or 'interactive'.
+        **kwargs : Any
+            Additional arguments passed to the plotting functions.
+
+        Returns
+        -------
+        Any
+            The plot object.
+        """
+        from .viz import plot_diagnostics as _plot_static
+        from .viz import plot_diagnostics_interactive as _plot_interactive
+
+        if mode == "static":
+            return _plot_static(self, **kwargs)
+        elif mode == "interactive":
+            rasterize = kwargs.pop("rasterize", True)
+            return _plot_interactive(self, rasterize=rasterize, **kwargs)
+        else:
+            raise ValueError(
+                f"Unknown plotting mode: '{mode}'. Must be 'static' or 'interactive'."
+            )
+
     def __call__(
         self,
         obj: Union[xr.DataArray, xr.Dataset, Any],
@@ -1303,7 +1336,7 @@ class Regridder:
         self,
         da_in: xr.DataArray,
         update_history_attr: bool = True,
-        _processed_coords: Optional[set[str]] = None,
+        _processed_ids: Optional[set[Union[int, str]]] = None,
         skipna: Optional[bool] = None,
         na_thres: Optional[float] = None,
     ) -> xr.DataArray:
@@ -1316,8 +1349,8 @@ class Regridder:
             The input DataArray.
         update_history_attr : bool, default True
             Whether to update the history attribute.
-        _processed_coords : set of str, optional
-            Set of coordinate names already being processed to avoid infinite recursion.
+        _processed_ids : set of int or str, optional
+            Set of object IDs or names already being processed to avoid infinite recursion.
         skipna : bool, optional
             Whether to handle NaNs. If None, uses initialization default.
         na_thres : float, optional
@@ -1328,8 +1361,8 @@ class Regridder:
         xr.DataArray
             The regridded DataArray.
         """
-        if _processed_coords is None:
-            _processed_coords = set()
+        if _processed_ids is None:
+            _processed_ids = set()
 
         if skipna is None:
             skipna = self.skipna
@@ -1354,12 +1387,14 @@ class Regridder:
         aux_coords_to_regrid = {}
 
         # Track this DataArray to prevent mutual recursion (Aero Protocol: Robustness)
+        # Using both ID and name for maximum safety
+        _processed_ids.add(id(da_in))
         if da_in.name is not None:
-            _processed_coords.add(str(da_in.name))
+            _processed_ids.add(str(da_in.name))
 
         for c_name, c_da in da_in.coords.items():
             # Avoid infinite recursion
-            if c_name in _processed_coords:
+            if id(c_da) in _processed_ids or c_name in _processed_ids:
                 continue
 
             if c_name not in da_in.dims and all(
@@ -1369,7 +1404,7 @@ class Regridder:
                 aux_coords_to_regrid[c_name] = self._regrid_dataarray(
                     c_da,
                     update_history_attr=False,
-                    _processed_coords=_processed_coords,
+                    _processed_ids=_processed_ids,
                     skipna=skipna,
                     na_thres=na_thres,
                 )
@@ -1638,12 +1673,12 @@ class Regridder:
                     pass
 
             if is_regriddable:
-                # Initialize _processed_coords with the name of the current variable
+                # Initialize _processed_ids with the name and ID of the current variable
                 # to prevent it from trying to regrid itself if it appears as a coordinate.
                 regridded_items[name] = self._regrid_dataarray(
                     da,
                     update_history_attr=False,
-                    _processed_coords={name},
+                    _processed_ids={id(da), name},
                     skipna=skipna,
                     na_thres=na_thres,
                 )
@@ -1667,7 +1702,7 @@ class Regridder:
                             c: self._regrid_dataarray(
                                 ds_in.coords[c],
                                 update_history_attr=False,
-                                _processed_coords={c},
+                                _processed_ids={id(ds_in.coords[c]), c},
                                 skipna=skipna,
                                 na_thres=na_thres,
                             )
