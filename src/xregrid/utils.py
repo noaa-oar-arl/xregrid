@@ -6,7 +6,11 @@ import socket
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
-import pyproj
+
+try:
+    import pyproj
+except ImportError:
+    pyproj = None
 import xarray as xr
 
 
@@ -197,7 +201,7 @@ def load_esmf_file(filepath: str) -> xr.Dataset:
     return ds
 
 
-def get_crs_info(obj: Union[xr.DataArray, xr.Dataset]) -> Optional[pyproj.CRS]:
+def get_crs_info(obj: Union[xr.DataArray, xr.Dataset]) -> Optional[Any]:
     """
     Detect CRS information from an xarray object's attributes or encoding.
 
@@ -286,7 +290,7 @@ def update_history(
 
 
 def create_grid_from_crs(
-    crs: Union[str, int, pyproj.CRS],
+    crs: Union[str, int, Any],
     extent: Tuple[float, float, float, float],
     res: Union[float, Tuple[float, float]],
     add_bounds: bool = True,
@@ -323,6 +327,11 @@ def create_grid_from_crs(
     xx, yy = np.meshgrid(x, y)
 
     # Transform to lat/lon
+    if pyproj is None:
+        raise ImportError(
+            "pyproj is required for create_grid_from_crs. "
+            "Install it with `pip install pyproj`."
+        )
     crs_obj = pyproj.CRS(crs)
     transformer = pyproj.Transformer.from_crs(crs_obj, "EPSG:4326", always_xy=True)
     lon, lat = transformer.transform(xx, yy)
@@ -404,7 +413,7 @@ def create_grid_from_crs(
 def create_mesh_from_coords(
     x: np.ndarray,
     y: np.ndarray,
-    crs: Union[str, int, pyproj.CRS],
+    crs: Union[str, int, Any],
 ) -> xr.Dataset:
     """
     Create an unstructured mesh dataset from coordinates and a CRS.
@@ -423,6 +432,11 @@ def create_mesh_from_coords(
     xr.Dataset
         The mesh dataset containing 'lat', 'lon' as 1D arrays sharing a dimension.
     """
+    if pyproj is None:
+        raise ImportError(
+            "pyproj is required for create_mesh_from_coords. "
+            "Install it with `pip install pyproj`."
+        )
     crs_obj = pyproj.CRS(crs)
     transformer = pyproj.Transformer.from_crs(crs_obj, "EPSG:4326", always_xy=True)
     lon, lat = transformer.transform(x, y)

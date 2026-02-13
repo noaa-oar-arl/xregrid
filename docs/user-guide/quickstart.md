@@ -185,6 +185,27 @@ regridder = Regridder(
 )
 ```
 
+## CRS and Metadata
+
+### Automatic Propagation
+
+XRegrid automatically propagates Coordinate Reference System (CRS) information from the target grid to the regridded output. This ensures that your data remains "geospatially aware" and ready for plotting.
+
+- **`crs` attribute**: If the target grid has a `crs` attribute (e.g., in WKT format), it is copied to the output.
+- **`grid_mapping`**: If the target grid uses a CF-compliant grid mapping variable, the output will correctly point to it.
+
+### Projection Discovery
+
+The `get_crs_info` utility can be used to robustly identify the CRS of any XRegrid-regridded object:
+
+```python
+from xregrid.utils import get_crs_info
+
+crs = get_crs_info(data_regridded)
+if crs:
+    print(f"Detected CRS: {crs.to_epsg()}")
+```
+
 ## Handling Missing Data
 
 ### Skip NaN Values
