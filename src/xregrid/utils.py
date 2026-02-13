@@ -6,7 +6,11 @@ import socket
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
-import pyproj
+
+try:
+    import pyproj
+except ImportError:
+    pyproj = None
 import xarray as xr
 
 
@@ -197,6 +201,67 @@ def load_esmf_file(filepath: str) -> xr.Dataset:
     return ds
 
 
+def get_crs_info(obj: Union[xr.DataArray, xr.Dataset]) -> Optional[Any]:
+    """
+    Detect CRS information from an xarray object's attributes or encoding.
+
+    Checks for 'grid_mapping', 'crs', and utilizes cf-xarray for robust discovery.
+
+    Parameters
+    ----------
+    obj : xr.DataArray or xr.Dataset
+        The xarray object to inspect.
+
+    Returns
+    -------
+    pyproj.CRS, optional
+        The detected CRS object, or None if no CRS info is found.
+    """
+    if pyproj is None:
+        return None
+
+    # Try to detect CRS from attributes and encoding
+    # We prioritize 'grid_mapping' then 'crs'
+    crs_info = (
+        obj.attrs.get("grid_mapping")
+        or obj.encoding.get("grid_mapping")
+        or obj.attrs.get("crs")
+        or obj.encoding.get("crs")
+    )
+
+    # Try cf-xarray for robust grid mapping discovery
+    if crs_info is None or isinstance(crs_info, str):
+        try:
+            # Use cf-xarray to find the grid mapping variable
+            # Some versions use get_grid_mapping(), others use grid_mappings property
+            gm_var = None
+            if hasattr(obj.cf, "get_grid_mapping"):
+                gm_var = obj.cf.get_grid_mapping()
+            elif hasattr(obj.cf, "grid_mappings"):
+                gms = obj.cf.grid_mappings
+                if gms:
+                    # In newer cf-xarray, grid_mappings returns a list/tuple of GridMapping objects
+                    # Each GridMapping object has an 'array' attribute (the DataArray)
+                    gm_var = gms[0].array if hasattr(gms[0], "array") else gms[0]
+
+            if gm_var is not None:
+                crs_info = (
+                    gm_var.attrs.get("crs_wkt")
+                    or gm_var.attrs.get("spatial_ref")
+                    or gm_var.attrs.get("grid_mapping_name")
+                )
+        except (AttributeError, KeyError, ImportError):
+            pass
+
+    if crs_info:
+        try:
+            return pyproj.CRS(crs_info)
+        except Exception:
+            pass
+
+    return None
+
+
 def update_history(
     obj: Union[xr.DataArray, xr.Dataset], message: str
 ) -> Union[xr.DataArray, xr.Dataset]:
@@ -225,7 +290,7 @@ def update_history(
 
 
 def create_grid_from_crs(
-    crs: Union[str, int, pyproj.CRS],
+    crs: Union[str, int, Any],
     extent: Tuple[float, float, float, float],
     res: Union[float, Tuple[float, float]],
     add_bounds: bool = True,
@@ -262,6 +327,11 @@ def create_grid_from_crs(
     xx, yy = np.meshgrid(x, y)
 
     # Transform to lat/lon
+    if pyproj is None:
+        raise ImportError(
+            "pyproj is required for create_grid_from_crs. "
+            "Install it with `pip install pyproj`."
+        )
     crs_obj = pyproj.CRS(crs)
     transformer = pyproj.Transformer.from_crs(crs_obj, "EPSG:4326", always_xy=True)
     lon, lat = transformer.transform(xx, yy)
@@ -343,7 +413,7 @@ def create_grid_from_crs(
 def create_mesh_from_coords(
     x: np.ndarray,
     y: np.ndarray,
-    crs: Union[str, int, pyproj.CRS],
+    crs: Union[str, int, Any],
 ) -> xr.Dataset:
     """
     Create an unstructured mesh dataset from coordinates and a CRS.
@@ -362,6 +432,11 @@ def create_mesh_from_coords(
     xr.Dataset
         The mesh dataset containing 'lat', 'lon' as 1D arrays sharing a dimension.
     """
+    if pyproj is None:
+        raise ImportError(
+            "pyproj is required for create_mesh_from_coords. "
+            "Install it with `pip install pyproj`."
+        )
     crs_obj = pyproj.CRS(crs)
     transformer = pyproj.Transformer.from_crs(crs_obj, "EPSG:4326", always_xy=True)
     lon, lat = transformer.transform(x, y)
