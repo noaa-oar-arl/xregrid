@@ -1,6 +1,17 @@
 import numpy as np
+import pytest
 import xarray as xr
 from xregrid import Regridder
+
+# Check for real ESMF
+try:
+    import esmpy
+
+    if hasattr(esmpy, "_is_mock") or "unittest.mock" in str(type(esmpy)):
+        raise ImportError
+    HAS_REAL_ESMF = True
+except ImportError:
+    HAS_REAL_ESMF = False
 
 
 def test_descending_coordinates():
@@ -32,6 +43,9 @@ def test_descending_coordinates():
 
     regridder = Regridder(ds_src, ds_tgt, method="bilinear")
     res = regridder(ds_src["data"])
+
+    if not HAS_REAL_ESMF:
+        pytest.skip("Skipping scientific correctness check for mocked ESMF")
 
     # Check mean. Points at lon=355 will be zero (unmapped).
     # There are 72 lon points. 71 are mapped, 1 is unmapped.
@@ -72,6 +86,10 @@ def test_mixed_monotonicity():
 
     # The output should have ascending lon as requested by target_grid
     assert np.all(np.diff(res.lon) > 0)
+
+    if not HAS_REAL_ESMF:
+        pytest.skip("Skipping scientific correctness check for mocked ESMF")
+
     # Data should match target_lon
     np.testing.assert_allclose(res.mean(dim="lat"), target_lon, atol=1e-5)
 

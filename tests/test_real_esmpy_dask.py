@@ -11,19 +11,24 @@ def is_esmpy_mocked():
     try:
         import esmpy
 
-        return isinstance(esmpy, MagicMock) or "MagicMock" in str(type(esmpy))
+        return (
+            hasattr(esmpy, "_is_mock")
+            or isinstance(esmpy, MagicMock)
+            or "MagicMock" in str(type(esmpy))
+        )
     except ImportError:
         return True
 
 
-pytestmark = pytest.mark.skipif(is_esmpy_mocked(), reason="esmpy is missing or mocked")
+HAS_REAL_ESMF = not is_esmpy_mocked()
+pytestmark = pytest.mark.skipif(not HAS_REAL_ESMF, reason="esmpy is missing or mocked")
 
 
 @pytest.fixture(scope="module")
 def dask_client():
     # Use processes=True for real ESMF thread-safety
     cluster = dask.distributed.LocalCluster(
-        n_workers=2, threads_per_worker=1, processes=True
+        n_workers=2, threads_per_worker=1, processes=HAS_REAL_ESMF
     )
     client = dask.distributed.Client(cluster)
     yield client

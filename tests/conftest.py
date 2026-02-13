@@ -1,74 +1,64 @@
 import sys
-from unittest.mock import MagicMock
 import numpy as np
 
-try:
-    import esmpy
 
-    # Verify it's actually working
-    esmpy.Manager(debug=False)
-    HAS_REAL_ESMF = True
-    print("\n--- Real ESMF detected in conftest.py ---")
-except (ImportError, Exception) as e:
-    HAS_REAL_ESMF = False
-    print(f"\n--- Real ESMF NOT detected in conftest.py: {e} ---")
+def setup_esmpy_mock():
+    # Use real classes for the mock to avoid pickling recursion issues
+    # and ensure isinstance works.
 
-if not HAS_REAL_ESMF:
-    mock_esmpy = MagicMock()
-    mock_esmpy._is_mock = True
-    mock_esmpy.CoordSys.SPH_DEG = 1
-    mock_esmpy.CoordSys.CART = 0
-    mock_esmpy.StaggerLoc.CENTER = 0
-    mock_esmpy.StaggerLoc.CORNER = 1
-    mock_esmpy.GridItem.MASK = 1
-    mock_esmpy.RegridMethod.BILINEAR = 0
-    mock_esmpy.RegridMethod.CONSERVE = 1
-    mock_esmpy.RegridMethod.NEAREST_STOD = 2
-    mock_esmpy.RegridMethod.NEAREST_DTOS = 3
-    mock_esmpy.RegridMethod.PATCH = 4
-    mock_esmpy.UnmappedAction.IGNORE = 1
-    mock_esmpy.ExtrapMethod.NEAREST_STOD = 0
-    mock_esmpy.ExtrapMethod.NEAREST_IDAVG = 1
-    mock_esmpy.ExtrapMethod.CREEP_FILL = 2
-    mock_esmpy.MeshLoc.NODE = 0
-    mock_esmpy.MeshLoc.ELEMENT = 1
-    mock_esmpy.MeshElemType.TRI = 1
-    mock_esmpy.MeshElemType.QUAD = 2
-    mock_esmpy.NormType.FRACAREA = 0
-    mock_esmpy.NormType.DSTAREA = 1
-    mock_esmpy.LogKind.MULTI = 1
-
-    # Mock Manager
-    mock_esmpy.Manager.return_value = MagicMock()
-    mock_esmpy.pet_count.return_value = 1
-    mock_esmpy.local_pet.return_value = 0
-
-    # Mock Grid
-    class Grid:
+    class MockGrid:
         def __init__(self, *args, **kwargs):
-            self.get_coords = MagicMock()
-            self.get_item = MagicMock()
-            self.add_item = MagicMock()
             self.staggerloc = [0, 1]
+            # args[0] is max_index (numpy array)
+            if args and isinstance(args[0], np.ndarray):
+                self.max_index = args[0]
+            else:
+                self.max_index = np.array([36, 18])
+            self.coords = {}
+            self.items = {}
+
+        def get_coords(self, coord_dim, staggerloc=0):
+            key = (coord_dim, staggerloc)
+            if key not in self.coords:
+                shape = list(self.max_index)
+                if staggerloc == 1:  # CORNER
+                    shape = [s + 1 for s in shape]
+                self.coords[key] = np.zeros(tuple(shape))
+            return self.coords[key]
+
+        def get_item(self, item, staggerloc=0):
+            key = (item, staggerloc)
+            if key not in self.items:
+                shape = list(self.max_index)
+                if staggerloc == 1:  # CORNER
+                    shape = [s + 1 for s in shape]
+                self.items[key] = np.zeros(tuple(shape))
+            return self.items[key]
+
+        def add_item(self, item, staggerloc=0):
+            pass
 
         def destroy(self):
             pass
 
-    mock_esmpy.Grid = Grid
-
-    class LocStream:
+    class MockLocStream:
         def __init__(self, *args, **kwargs):
             self.items = {}
+            # location_count is a keyword arg
+            self.size = kwargs.get("location_count", 10)
 
         def __setitem__(self, key, value):
             self.items[key] = value
 
+        def __getitem__(self, key):
+            if key not in self.items:
+                self.items[key] = np.zeros(self.size)
+            return self.items[key]
+
         def destroy(self):
             pass
 
-    mock_esmpy.LocStream = LocStream
-
-    class Mesh:
+    class MockMesh:
         def __init__(self, *args, **kwargs):
             self.nodes = []
             self.elements = []
@@ -82,20 +72,15 @@ if not HAS_REAL_ESMF:
         def destroy(self):
             pass
 
-    mock_esmpy.Mesh = Mesh
-
-    # Mock Field
-    class Field:
+    class MockField:
         def __init__(self, *args, **kwargs):
             self.name = kwargs.get("name", "field")
+            self.grid = args[0] if args else None
 
         def destroy(self):
             pass
 
-    mock_esmpy.Field = Field
-
-    # Mock Regrid
-    class Regrid:
+    class MockRegrid:
         def __init__(self, *args, **kwargs):
             pass
 
@@ -112,6 +97,109 @@ if not HAS_REAL_ESMF:
         def destroy(self):
             pass
 
-    mock_esmpy.Regrid = Regrid
+    class MockESMF:
+        def __init__(self):
+            self._is_mock = True
 
+            class CoordSys:
+                SPH_DEG = 1
+                CART = 0
+
+            self.CoordSys = CoordSys
+
+            class StaggerLoc:
+                CENTER = 0
+                CORNER = 1
+
+            self.StaggerLoc = StaggerLoc
+
+            class GridItem:
+                MASK = 1
+
+            self.GridItem = GridItem
+
+            class RegridMethod:
+                BILINEAR = 0
+                CONSERVE = 1
+                NEAREST_STOD = 2
+                NEAREST_DTOS = 3
+                PATCH = 4
+
+            self.RegridMethod = RegridMethod
+
+            class UnmappedAction:
+                IGNORE = 1
+
+            self.UnmappedAction = UnmappedAction
+
+            class ExtrapMethod:
+                NEAREST_STOD = 0
+                NEAREST_IDAVG = 1
+                CREEP_FILL = 2
+
+            self.ExtrapMethod = ExtrapMethod
+
+            class MeshLoc:
+                NODE = 0
+                ELEMENT = 1
+
+            self.MeshLoc = MeshLoc
+
+            class MeshElemType:
+                TRI = 1
+                QUAD = 2
+
+            self.MeshElemType = MeshElemType
+
+            class NormType:
+                FRACAREA = 0
+                DSTAREA = 1
+
+            self.NormType = NormType
+
+            class LogKind:
+                MULTI = 1
+
+            self.LogKind = LogKind
+
+            self.Grid = MockGrid
+            self.LocStream = MockLocStream
+            self.Mesh = MockMesh
+            self.Field = MockField
+            self.Regrid = MockRegrid
+            self.__version__ = "8.6.0"
+
+        def Manager(self, *args, **kwargs):
+            class MockManager:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            return MockManager()
+
+        def pet_count(self):
+            return 1
+
+        def local_pet(self):
+            return 0
+
+    mock_esmpy = MockESMF()
     sys.modules["esmpy"] = mock_esmpy
+    return mock_esmpy
+
+
+try:
+    import esmpy
+
+    # Verify it's actually working
+    if hasattr(esmpy, "_is_mock"):
+        raise ImportError("Already mocked")
+    esmpy.Manager(debug=False)
+    HAS_REAL_ESMF = True
+    print("\n--- Real ESMF detected in conftest.py ---")
+except (ImportError, Exception) as e:
+    HAS_REAL_ESMF = False
+    print(f"\n--- Real ESMF NOT detected in conftest.py: {e} ---")
+    setup_esmpy_mock()

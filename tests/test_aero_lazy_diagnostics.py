@@ -1,10 +1,8 @@
-import numpy as np
 import pytest
-import sys
-from unittest.mock import MagicMock
 import dask.distributed
+from xregrid import Regridder, create_global_grid
 
-# Initialize mock only if real esmpy is not available
+# Check for real ESMF
 try:
     import esmpy
 
@@ -13,86 +11,6 @@ try:
     HAS_REAL_ESMF = True
 except ImportError:
     HAS_REAL_ESMF = False
-
-
-# --- Mock ESMF Setup (Pickleable) ---
-class MockGrid:
-    def __init__(self, *args, **kwargs):
-        self.staggerloc = [0, 1]
-
-    def get_coords(self, *args, **kwargs):
-        return MagicMock()
-
-    def get_item(self, *args, **kwargs):
-        return MagicMock()
-
-    def add_item(self, *args, **kwargs):
-        pass
-
-
-class MockMesh:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def add_nodes(self, *args, **kwargs):
-        pass
-
-    def add_elements(self, *args, **kwargs):
-        pass
-
-
-class MockRegrid:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def get_factors(self):
-        return np.array([0]), np.array([0])
-
-    def get_weights_dict(self, deep_copy=True):
-        return {
-            "row_dst": np.array([1]),
-            "col_src": np.array([1]),
-            "weights": np.array([1.0]),
-        }
-
-
-def setup_mock_esmpy():
-    mock = MagicMock()
-    mock.CoordSys.SPH_DEG = 1
-    mock.CoordSys.CART = 0
-    mock.StaggerLoc.CENTER = 0
-    mock.StaggerLoc.CORNER = 1
-    mock.GridItem.MASK = 1
-    mock.RegridMethod.BILINEAR = 0
-    mock.RegridMethod.CONSERVE = 1
-    mock.RegridMethod.NEAREST_STOD = 2
-    mock.RegridMethod.NEAREST_DTOS = 3
-    mock.RegridMethod.PATCH = 4
-    mock.UnmappedAction.IGNORE = 1
-    mock.ExtrapMethod.NEAREST_STOD = 0
-    mock.ExtrapMethod.NEAREST_IDAVG = 1
-    mock.ExtrapMethod.CREEP_FILL = 2
-    mock.MeshLoc.NODE = 0
-    mock.MeshLoc.ELEMENT = 1
-    mock.MeshElemType.TRI = 1
-    mock.MeshElemType.QUAD = 2
-    mock.NormType.FRACAREA = 0
-    mock.NormType.DSTAREA = 1
-    mock.Manager.return_value = MagicMock()
-    mock.pet_count.return_value = 1
-    mock.local_pet.return_value = 0
-    mock.__version__ = "8.6.0"
-    mock.Grid = MockGrid
-    mock.LocStream = MockGrid
-    mock.Mesh = MockMesh
-    mock.Field.return_value = MagicMock()
-    mock.Regrid = MockRegrid
-    sys.modules["esmpy"] = mock
-
-
-if not HAS_REAL_ESMF:
-    setup_mock_esmpy()
-from xregrid import Regridder, create_global_grid  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -131,7 +49,7 @@ def test_lazy_diagnostics_distributed(dask_client):
 
     # 4. Verify weights property gathers correctly
     w = regridder.weights
-    assert isinstance(w, (np.ndarray, object))  # scipy sparse matrix
+    assert w is not None
     assert not hasattr(regridder._weights_matrix, "key")
 
     # 5. Verify quality_report(skip_heavy=False) now works eagerly
@@ -159,7 +77,7 @@ def test_diagnostics_distributed_identity():
     diag_lazy = diag_lazy_raw.compute()
 
     # Verify shapes and dimensions
-    assert diag_eager.dims == diag_lazy.dims
+    assert diag_eager.sizes == diag_lazy.sizes
     assert diag_eager.weight_sum.shape == diag_lazy.weight_sum.shape
     # Verify we have some weights
     assert diag_lazy.weight_sum.sum() > 0

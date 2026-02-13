@@ -2,59 +2,16 @@ import xarray as xr
 import numpy as np
 import dask.distributed
 from xregrid import Regridder, create_global_grid
-from xregrid.xregrid import esmpy
-from unittest.mock import MagicMock
 
+# Check for real ESMF
+try:
+    import esmpy
 
-def setup_worker_mock():
-    from unittest.mock import MagicMock
-    import sys
-    import numpy as np
-
-    try:
-        import esmpy
-
-        if not isinstance(esmpy, MagicMock):
-            return
-    except ImportError:
-        pass
-
-    mock_esmpy = MagicMock()
-    mock_esmpy.CoordSys.SPH_DEG = 1
-    mock_esmpy.StaggerLoc.CENTER = 0
-    mock_esmpy.StaggerLoc.CORNER = 1
-    mock_esmpy.GridItem.MASK = 1
-    mock_esmpy.RegridMethod.BILINEAR = 0
-    mock_esmpy.RegridMethod.CONSERVE = 1
-    mock_esmpy.RegridMethod.NEAREST_STOD = 2
-    mock_esmpy.RegridMethod.NEAREST_DTOS = 3
-    mock_esmpy.RegridMethod.PATCH = 4
-    mock_esmpy.UnmappedAction.IGNORE = 1
-    mock_esmpy.ExtrapMethod.NEAREST_STOD = 0
-    mock_esmpy.ExtrapMethod.NEAREST_IDAVG = 1
-    mock_esmpy.ExtrapMethod.CREEP_FILL = 2
-    mock_esmpy.Manager.return_value = MagicMock()
-    mock_esmpy.pet_count.return_value = 1
-    mock_esmpy.local_pet.return_value = 0
-
-    class MockGrid:
-        def __init__(self, *args, **kwargs):
-            self.get_coords = MagicMock()
-            self.get_item = MagicMock()
-            self.add_item = MagicMock()
-            self.staggerloc = [0, 1]
-
-    mock_esmpy.Grid = MockGrid
-    mock_esmpy.Field.return_value = MagicMock()
-    mock_regrid = MagicMock()
-    mock_regrid.get_factors.return_value = (np.array([0]), np.array([0]))
-    mock_regrid.get_weights_dict.return_value = {
-        "row_dst": np.array([1]),
-        "col_src": np.array([1]),
-        "weights": np.array([1.0]),
-    }
-    mock_esmpy.Regrid.return_value = mock_regrid
-    sys.modules["esmpy"] = mock_esmpy
+    if hasattr(esmpy, "_is_mock") or "unittest.mock" in str(type(esmpy)):
+        raise ImportError
+    HAS_REAL_ESMF = True
+except ImportError:
+    HAS_REAL_ESMF = False
 
 
 def test_dask_parallel_regridding():
@@ -64,10 +21,9 @@ def test_dask_parallel_regridding():
     """
     # Create LocalCluster for testing
     cluster = dask.distributed.LocalCluster(
-        n_workers=2, threads_per_worker=1, processes=True
+        n_workers=2, threads_per_worker=1, processes=HAS_REAL_ESMF
     )
     client = dask.distributed.Client(cluster)
-    client.run(setup_worker_mock)
 
     try:
         source_grid = create_global_grid(10, 10)
@@ -80,17 +36,21 @@ def test_dask_parallel_regridding():
         w_serial = regridder_serial.weights
 
         # 2a. Generate weights in parallel (Eager)
-        print(f"Using Dask Client: {client}")
-        regridder_eager = Regridder(
-            source_grid, target_grid, method="bilinear", parallel=True, compute=True
-        )
-        w_eager = regridder_eager.weights
+        try:
+            regridder_eager = Regridder(
+                source_grid, target_grid, method="bilinear", parallel=True, compute=True
+            )
+            w_eager = regridder_eager.weights
+        except Exception as e:
+            print(f"ERROR in Regridder creation: {e}")
+            import traceback
+
+            traceback.print_exc()
+            raise
 
         # 3a. Compare Eager
         assert w_serial.shape == w_eager.shape
-        # Note: Weights might differ in mock environment due to multiple chunks
-        # returning the same mock weight. In real ESMF, these would match.
-        if not (isinstance(esmpy, MagicMock) or hasattr(esmpy, "_is_mock")):
+        if HAS_REAL_ESMF:
             assert w_serial.nnz == w_eager.nnz
             diff_eager = w_serial - w_eager
             assert np.abs(diff_eager.data).max() < 1e-10 if diff_eager.nnz > 0 else True
@@ -100,29 +60,26 @@ def test_dask_parallel_regridding():
             source_grid, target_grid, method="bilinear", parallel=True, compute=False
         )
 
-        # Verify persist mechanism (should just return self)
+        # Verify persist mechanism
         assert regridder_lazy.persist() is regridder_lazy
 
-        # Verify it hasn't computed yet (it uses internal attribute for this check)
+        # Verify it hasn't computed yet
         assert regridder_lazy._weights_matrix is None
         assert regridder_lazy._dask_futures is not None
 
         # Trigger compute
-        print("Triggering compute on lazy regridder...")
         regridder_lazy.compute()
         w_lazy = regridder_lazy.weights
 
         assert w_lazy is not None
-        assert regridder_lazy._dask_futures is None  # should be cleared
+        assert regridder_lazy._dask_futures is None
 
         # 3b. Compare Lazy
         assert w_serial.shape == w_lazy.shape
-        if not (isinstance(esmpy, MagicMock) or hasattr(esmpy, "_is_mock")):
+        if HAS_REAL_ESMF:
             assert w_serial.nnz == w_lazy.nnz
             diff_lazy = w_serial - w_lazy
             assert np.abs(diff_lazy.data).max() < 1e-10 if diff_lazy.nnz > 0 else True
-
-        print("Generic identity verification successful")
 
         # 4. Compare regridding result on dummy data
         data = np.random.rand(source_grid.sizes["lat"], source_grid.sizes["lon"])
@@ -133,9 +90,9 @@ def test_dask_parallel_regridding():
         )
 
         res_serial = regridder_serial(da)
-        res_parallel = regridder_lazy(da)  # Should be identical
+        res_parallel = regridder_lazy(da)
 
-        if not isinstance(esmpy, MagicMock):
+        if HAS_REAL_ESMF:
             xr.testing.assert_allclose(res_serial, res_parallel)
 
         # 5. Test auto-compute on call
@@ -143,21 +100,14 @@ def test_dask_parallel_regridding():
             source_grid, target_grid, method="bilinear", parallel=True, compute=False
         )
         assert regridder_auto._weights_matrix is None
-        print("Triggering auto-compute via __call__...")
         res_auto = regridder_auto(da)
         assert regridder_auto._weights_matrix is not None
-        if not isinstance(esmpy, MagicMock):
+        if HAS_REAL_ESMF:
             xr.testing.assert_allclose(res_serial, res_auto)
-
-        print("Dask parallel verification successful!")
 
     finally:
         client.close()
         cluster.close()
-
-
-if __name__ == "__main__":
-    test_dask_parallel_regridding()
 
 
 def test_dask_curvilinear_parallel():
@@ -167,10 +117,9 @@ def test_dask_curvilinear_parallel():
     from xregrid import create_grid_from_crs
 
     cluster = dask.distributed.LocalCluster(
-        n_workers=2, threads_per_worker=1, processes=True
+        n_workers=2, threads_per_worker=1, processes=HAS_REAL_ESMF
     )
     client = dask.distributed.Client(cluster)
-    client.run(setup_worker_mock)
 
     try:
         source_grid = create_grid_from_crs("EPSG:4326", (0, 10, 0, 10), 1)
