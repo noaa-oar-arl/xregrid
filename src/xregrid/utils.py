@@ -197,6 +197,67 @@ def load_esmf_file(filepath: str) -> xr.Dataset:
     return ds
 
 
+def get_crs_info(obj: Union[xr.DataArray, xr.Dataset]) -> Optional[pyproj.CRS]:
+    """
+    Detect CRS information from an xarray object's attributes or encoding.
+
+    Checks for 'grid_mapping', 'crs', and utilizes cf-xarray for robust discovery.
+
+    Parameters
+    ----------
+    obj : xr.DataArray or xr.Dataset
+        The xarray object to inspect.
+
+    Returns
+    -------
+    pyproj.CRS, optional
+        The detected CRS object, or None if no CRS info is found.
+    """
+    if pyproj is None:
+        return None
+
+    # Try to detect CRS from attributes and encoding
+    # We prioritize 'grid_mapping' then 'crs'
+    crs_info = (
+        obj.attrs.get("grid_mapping")
+        or obj.encoding.get("grid_mapping")
+        or obj.attrs.get("crs")
+        or obj.encoding.get("crs")
+    )
+
+    # Try cf-xarray for robust grid mapping discovery
+    if crs_info is None or isinstance(crs_info, str):
+        try:
+            # Use cf-xarray to find the grid mapping variable
+            # Some versions use get_grid_mapping(), others use grid_mappings property
+            gm_var = None
+            if hasattr(obj.cf, "get_grid_mapping"):
+                gm_var = obj.cf.get_grid_mapping()
+            elif hasattr(obj.cf, "grid_mappings"):
+                gms = obj.cf.grid_mappings
+                if gms:
+                    # In newer cf-xarray, grid_mappings returns a list/tuple of GridMapping objects
+                    # Each GridMapping object has an 'array' attribute (the DataArray)
+                    gm_var = gms[0].array if hasattr(gms[0], "array") else gms[0]
+
+            if gm_var is not None:
+                crs_info = (
+                    gm_var.attrs.get("crs_wkt")
+                    or gm_var.attrs.get("spatial_ref")
+                    or gm_var.attrs.get("grid_mapping_name")
+                )
+        except (AttributeError, KeyError, ImportError):
+            pass
+
+    if crs_info:
+        try:
+            return pyproj.CRS(crs_info)
+        except Exception:
+            pass
+
+    return None
+
+
 def update_history(
     obj: Union[xr.DataArray, xr.Dataset], message: str
 ) -> Union[xr.DataArray, xr.Dataset]:

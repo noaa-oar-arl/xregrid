@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import xarray as xr
 
+from xregrid.utils import get_crs_info
+
 if TYPE_CHECKING:
     from xregrid.regridder import Regridder
 
@@ -72,42 +74,54 @@ def plot_static(
             "Install it with `pip install matplotlib`."
         )
 
+    # Handle axes and faceting early to avoid multiple 'ax' arguments (Aero Protocol: Robustness)
+    ax = kwargs.pop("ax", None)
+    is_faceted = "col" in kwargs or "row" in kwargs
+
+    # Aero Protocol: No Ambiguous Plots.
+    # Identify spatial and faceting dimensions to slice away everything else.
+    # We do this early so it applies even if cartopy is missing.
+
+    # Identify spatial dimensions using cf-xarray for robust slicing
+    try:
+        # We look for dimensions associated with latitude and longitude
+        lat_dims = da.cf["latitude"].dims
+        lon_dims = da.cf["longitude"].dims
+        spatial_dims = set(lat_dims) | set(lon_dims)
+    except (KeyError, AttributeError, ImportError):
+        # Fallback to assuming the last two dimensions are spatial
+        spatial_dims = set(da.dims[-2:])
+
+    # Identify dimensions used for faceting
+    facet_dims = {kwargs.get("col"), kwargs.get("row")} - {None}
+
+    # Dimensions that are neither spatial nor used for faceting
+    extra_dims = [d for d in da.dims if d not in spatial_dims and d not in facet_dims]
+
+    if extra_dims:
+        first_slice = {d: 0 for d in extra_dims}
+        warnings.warn(
+            f"DataArray has {da.ndim} dimensions, but only 2 spatial dimensions "
+            f"(plus optional faceting) are supported for static plots. "
+            f"Automatically selecting the first slice along {extra_dims}: {first_slice}. "
+            "To plot other slices, subset your data before calling plot_static."
+        )
+        da = da.isel(first_slice)
+
     if ccrs is None:
         # Fallback to standard matplotlib if cartopy is missing
-        ax = plt.gca()
+        if ax is None:
+            ax = plt.gca()
         im = da.plot(ax=ax, **kwargs)
-        ax.set_title(title)
+        if title:
+            ax.set_title(title)
         return im
 
     if transform is None and ccrs is not None:
-        # Try to detect CRS from attributes and encoding (Aero Protocol: Scientific Hygiene)
-        # We prioritize 'grid_mapping' then 'crs'
-        crs_info = (
-            da.attrs.get("grid_mapping")
-            or da.encoding.get("grid_mapping")
-            or da.attrs.get("crs")
-            or da.encoding.get("crs")
-        )
+        proj_crs = get_crs_info(da)
 
-        # Try cf-xarray for robust grid mapping discovery (Aero Protocol: CF-Awareness)
-        if crs_info is None or isinstance(crs_info, str):
+        if proj_crs:
             try:
-                # Use cf-xarray to find the grid mapping variable
-                gm_var = da.cf.get_grid_mapping()
-                if gm_var is not None:
-                    crs_info = (
-                        gm_var.attrs.get("crs_wkt")
-                        or gm_var.attrs.get("spatial_ref")
-                        or gm_var.attrs.get("grid_mapping_name")
-                    )
-            except (AttributeError, KeyError, ImportError):
-                pass
-
-        if crs_info and pyproj is not None:
-            try:
-                # Use pyproj to identify the CRS
-                proj_crs = pyproj.CRS(crs_info)
-
                 # Map pyproj CRS to Cartopy projections
                 if proj_crs.is_geographic:
                     transform = ccrs.PlateCarree()
@@ -135,10 +149,6 @@ def plot_static(
         projection = ccrs.PlateCarree()
     if transform is None:
         transform = ccrs.PlateCarree()
-
-    # Handle axes and faceting
-    is_faceted = "col" in kwargs or "row" in kwargs
-    ax = kwargs.pop("ax", None)
 
     if ax is not None:
         if is_faceted:
@@ -178,35 +188,6 @@ def plot_static(
 
     if is_faceted and "subplot_kws" not in kwargs:
         kwargs["subplot_kws"] = {"projection": projection}
-
-    # Aero Protocol: No Ambiguous Plots.
-    # Identify spatial and faceting dimensions to slice away everything else.
-
-    # Identify spatial dimensions using cf-xarray for robust slicing
-    try:
-        # We look for dimensions associated with latitude and longitude
-        lat_dims = da.cf["latitude"].dims
-        lon_dims = da.cf["longitude"].dims
-        spatial_dims = set(lat_dims) | set(lon_dims)
-    except (KeyError, AttributeError, ImportError):
-        # Fallback to assuming the last two dimensions are spatial
-        spatial_dims = set(da.dims[-2:])
-
-    # Identify dimensions used for faceting
-    facet_dims = {kwargs.get("col"), kwargs.get("row")} - {None}
-
-    # Dimensions that are neither spatial nor used for faceting
-    extra_dims = [d for d in da.dims if d not in spatial_dims and d not in facet_dims]
-
-    if extra_dims:
-        first_slice = {d: 0 for d in extra_dims}
-        warnings.warn(
-            f"DataArray has {da.ndim} dimensions, but only 2 spatial dimensions "
-            f"(plus optional faceting) are supported for static plots. "
-            f"Automatically selecting the first slice along {extra_dims}: {first_slice}. "
-            "To plot other slices, subset your data before calling plot_static."
-        )
-        da = da.isel(first_slice)
 
     im = da.plot(ax=ax, **kwargs)
 

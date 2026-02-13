@@ -9,7 +9,7 @@ import numpy as np
 import xarray as xr
 from scipy.sparse import coo_matrix
 
-from xregrid.utils import update_history
+from xregrid.utils import update_history, get_crs_info
 from xregrid.grid import (
     _get_mesh_info,
     _bounds_to_vertices,
@@ -1595,6 +1595,14 @@ class Regridder:
             if "grid_mapping" in out.encoding:
                 del out.encoding["grid_mapping"]
 
+        # Propagate CRS metadata (Aero Protocol: Scientific Hygiene)
+        target_crs_obj = get_crs_info(self.target_grid_ds)
+        if target_crs_obj:
+            out.attrs["crs"] = target_crs_obj.to_wkt()
+        elif "crs" in out.attrs:
+            # Remove source CRS as it's no longer valid
+            del out.attrs["crs"]
+
         # Re-attach regridded auxiliary coordinates
         if aux_coords_to_regrid:
             out = out.assign_coords(aux_coords_to_regrid)
@@ -1743,6 +1751,14 @@ class Regridder:
             # Remove invalid grid_mapping
             if "grid_mapping" in out.attrs:
                 del out.attrs["grid_mapping"]
+
+        # Propagate CRS metadata (Aero Protocol: Scientific Hygiene)
+        target_crs_obj = get_crs_info(self.target_grid_ds)
+        if target_crs_obj:
+            out.attrs["crs"] = target_crs_obj.to_wkt()
+        elif "crs" in out.attrs:
+            # Remove source CRS as it's no longer valid
+            del out.attrs["crs"]
 
         # Update history for provenance
         try:
