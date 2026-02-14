@@ -220,6 +220,46 @@ def _to_degrees(da: xr.DataArray) -> xr.DataArray:
     return da
 
 
+def _clip_latitudes(da: xr.DataArray) -> xr.DataArray:
+    """
+    Clip latitude values to exactly [-90, 90] to avoid ESMF errors.
+
+    ESMF can fail with ESMF_RC_VAL_OUTOFRANGE if latitudes are even slightly
+    beyond 90 degrees due to floating point precision.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Latitude coordinate data.
+
+    Returns
+    -------
+    xr.DataArray
+        Clipped latitude data.
+    """
+    # Use xarray's clip to maintain laziness if dask-backed
+    return da.clip(-90.0, 90.0)
+
+
+def _normalize_longitudes(da: xr.DataArray, lon0: float = 0.0) -> xr.DataArray:
+    """
+    Normalize longitude values to a specific range (default [0, 360]).
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Longitude coordinate data.
+    lon0 : float, default 0.0
+        The start of the 360-degree range.
+
+    Returns
+    -------
+    xr.DataArray
+        Normalized longitude data.
+    """
+    return (da - lon0) % 360 + lon0
+
+
 def _get_unstructured_mesh_info(
     ds: xr.Dataset,
 ) -> Tuple[
@@ -265,8 +305,8 @@ def _get_unstructured_mesh_info(
     if hasattr(ds, "uxgrid"):
         uxgrid = getattr(ds, "uxgrid")
         try:
-            node_lat = _to_degrees(uxgrid.node_lat).values
-            node_lon = _to_degrees(uxgrid.node_lon).values
+            node_lat = _clip_latitudes(_to_degrees(uxgrid.node_lat)).values
+            node_lon = _normalize_longitudes(_to_degrees(uxgrid.node_lon)).values
             conn_raw = uxgrid.face_node_connectivity.values
             start_index = uxgrid.face_node_connectivity.attrs.get("start_index", 0)
             fill_value = uxgrid.face_node_connectivity.attrs.get(
@@ -311,8 +351,8 @@ def _get_unstructured_mesh_info(
 
     # 1. Detect MPAS
     if "verticesOnCell" in ds and "latVertex" in ds and "lonVertex" in ds:
-        node_lat = _to_degrees(ds["latVertex"]).values
-        node_lon = _to_degrees(ds["lonVertex"]).values
+        node_lat = _clip_latitudes(_to_degrees(ds["latVertex"])).values
+        node_lon = _normalize_longitudes(_to_degrees(ds["lonVertex"])).values
         conn_raw = ds["verticesOnCell"].values
         n_edges = (
             ds["nEdgesOnCell"].values
@@ -383,8 +423,8 @@ def _get_unstructured_mesh_info(
             node_lat_var = "node_lat" if "node_lat" in ds else "lat_node"
 
         if node_lon_var in ds and node_lat_var in ds:
-            node_lon = _to_degrees(ds[node_lon_var]).values
-            node_lat = _to_degrees(ds[node_lat_var]).values
+            node_lon = _normalize_longitudes(_to_degrees(ds[node_lon_var])).values
+            node_lat = _clip_latitudes(_to_degrees(ds[node_lat_var])).values
             conn_raw = ds[conn_var].values
             start_index = ds[conn_var].attrs.get("start_index", 0)
             fill_value = ds[conn_var].attrs.get("_FillValue", -1)
@@ -532,19 +572,27 @@ def _create_esmf_grid(
             )
         locstream = esmpy.LocStream(shape[0], coord_sys=coord_sys)
         if coord_sys == esmpy.CoordSys.CART:
-            locstream["ESMF:X"] = _to_degrees(lon).values.astype(np.float64)
-            locstream["ESMF:Y"] = _to_degrees(lat).values.astype(np.float64)
+            locstream["ESMF:X"] = _normalize_longitudes(_to_degrees(lon)).values.astype(
+                np.float64
+            )
+            locstream["ESMF:Y"] = _clip_latitudes(_to_degrees(lat)).values.astype(
+                np.float64
+            )
         else:
-            locstream["ESMF:Lon"] = _to_degrees(lon).values.astype(np.float64)
-            locstream["ESMF:Lat"] = _to_degrees(lat).values.astype(np.float64)
+            locstream["ESMF:Lon"] = _normalize_longitudes(
+                _to_degrees(lon)
+            ).values.astype(np.float64)
+            locstream["ESMF:Lat"] = _clip_latitudes(_to_degrees(lat)).values.astype(
+                np.float64
+            )
 
         if mask_var and mask_var in ds:
             locstream["ESMF:Mask"] = ds[mask_var].values.astype(np.int32)
 
         return locstream, provenance, None
     else:
-        lon_f = _to_degrees(lon).values.T
-        lat_f = _to_degrees(lat).values.T
+        lon_f = _normalize_longitudes(_to_degrees(lon)).values.T
+        lat_f = _clip_latitudes(_to_degrees(lat)).values.T
         shape_f = lon_f.shape
 
         num_peri_dims = 1 if periodic else None
@@ -598,9 +646,19 @@ def _create_esmf_grid(
 
         if has_bounds:
             if lon_b.ndim == 1 and lat_b.ndim == 1:
-                lon_b_vals, lat_b_vals = np.meshgrid(lon_b, lat_b)
+                # Need to convert to DataArray if they are just numpy arrays
+                if not isinstance(lon_b, xr.DataArray):
+                    lon_b = xr.DataArray(lon_b)
+                if not isinstance(lat_b, xr.DataArray):
+                    lat_b = xr.DataArray(lat_b)
+
+                lon_b_vals, lat_b_vals = np.meshgrid(
+                    _normalize_longitudes(_to_degrees(lon_b)).values,
+                    _clip_latitudes(_to_degrees(lat_b)).values,
+                )
             else:
-                lon_b_vals, lat_b_vals = lon_b, lat_b
+                lon_b_vals = _normalize_longitudes(_to_degrees(lon_b)).values
+                lat_b_vals = _clip_latitudes(_to_degrees(lat_b)).values
 
             lon_b_vals_f = lon_b_vals.T
             lat_b_vals_f = lat_b_vals.T

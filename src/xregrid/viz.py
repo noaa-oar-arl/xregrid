@@ -317,13 +317,34 @@ def plot_diagnostics(
     if plt is None:
         raise ImportError("Matplotlib is required for plot_diagnostics.")
 
+    # Aero Protocol: Automated projection discovery (No Ambiguous Plots)
+    if projection is None and ccrs is not None:
+        # Attempt to discover projection from target grid
+        target_crs = get_crs_info(regridder.target_grid_ds)
+        if target_crs:
+            if target_crs.is_geographic:
+                projection = ccrs.PlateCarree()
+            elif target_crs.is_projected:
+                # Basic mapping to common projections
+                if target_crs.utm_zone:
+                    projection = ccrs.UTM(
+                        zone=int(target_crs.utm_zone[:-1]),
+                        southern_hemisphere="S" in target_crs.utm_zone,
+                    )
+                elif "merc" in target_crs.to_dict().get("proj", ""):
+                    projection = ccrs.Mercator()
+                else:
+                    projection = ccrs.PlateCarree()
+        else:
+            projection = ccrs.PlateCarree()
+
     ds_diag = regridder.diagnostics()
 
     fig, axes = plt.subplots(
         1,
         2,
         figsize=(12, 5),
-        subplot_kw={"projection": projection or (ccrs.PlateCarree() if ccrs else None)},
+        subplot_kw={"projection": projection},
     )
 
     plot_static(
