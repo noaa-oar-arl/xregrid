@@ -314,12 +314,11 @@ class Regridder:
                 if np.issubdtype(ds[lat_dim].dtype, np.number) and np.issubdtype(
                     ds[lon_dim].dtype, np.number
                 ):
-                    lat_vals = ds[lat_dim].values
-                    lon_vals = ds[lon_dim].values
-
-                    # Check if already ascending
-                    is_lat_asc = np.all(np.diff(lat_vals) > 0)
-                    is_lon_asc = np.all(np.diff(lon_vals) > 0)
+                    # Aero Protocol: Use indexes for monotonicity check to remain lazy.
+                    # Indexes are always in memory in xarray, so this doesn't trigger
+                    # computation of dask-backed coordinates.
+                    is_lat_asc = ds.indexes[lat_dim].is_monotonic_increasing
+                    is_lon_asc = ds.indexes[lon_dim].is_monotonic_increasing
 
                     if not (is_lat_asc and is_lon_asc):
                         ds = ds.sortby([lat_dim, lon_dim])
@@ -1050,6 +1049,12 @@ class Regridder:
             },
             coords=coords,
         )
+
+        # Propagate CRS metadata (Aero Protocol: No Ambiguous Plots)
+        target_crs_obj = get_crs_info(self.target_grid_ds)
+        if target_crs_obj:
+            ds.attrs["crs"] = target_crs_obj.to_wkt()
+
         update_history(ds, "Generated spatial diagnostics from Regridder weights.")
         return ds
 

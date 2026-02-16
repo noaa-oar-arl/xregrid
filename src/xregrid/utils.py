@@ -217,7 +217,7 @@ def get_crs_info(obj: Union[xr.DataArray, xr.Dataset]) -> Optional[Any]:
     pyproj.CRS, optional
         The detected CRS object, or None if no CRS info is found.
     """
-    if pyproj is None:
+    if pyproj is None or obj is None:
         return None
 
     # Try to detect CRS from attributes and encoding

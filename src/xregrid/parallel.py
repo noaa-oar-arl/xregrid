@@ -240,7 +240,14 @@ def _compute_chunk_weights(
         regrid = esmpy.Regrid(src_field, dst_field, **regrid_kwargs)
         weights = regrid.get_weights_dict(deep_copy=True)
 
-        # 5. Map local destination indices to global grid indices
+        # 5. Dask Resource Hygiene: Destroy temporary ESMF objects (Aero Protocol)
+        # We don't destroy src_field because it's cached.
+        regrid.destroy()
+        dst_field.destroy()
+        if hasattr(dst_obj, "destroy"):
+            dst_obj.destroy()
+
+        # 6. Map local destination indices to global grid indices
         if isinstance(dest_slice_info, np.ndarray):
             # Backward compatibility or direct index passing
             global_indices = dest_slice_info
