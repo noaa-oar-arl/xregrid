@@ -44,6 +44,7 @@ def test_lazy_diagnostics_distributed(dask_client):
     assert "quality=lazy" in repr_str
 
     # 3. Verify quality_report(skip_heavy=True) handles remote weights
+    # If skip_heavy=True and remote, it should return -1 to avoid roundtrips.
     report_light = regridder.quality_report(skip_heavy=True)
     assert report_light["n_weights"] == -1
 

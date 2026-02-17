@@ -72,6 +72,23 @@ def _get_weights_sum_task(matrix: Any) -> np.ndarray:
     return np.array(matrix.sum(axis=1)).flatten()
 
 
+def _get_nnz_task(matrix: Any) -> int:
+    """
+    Internal worker task to compute the number of non-zero elements.
+
+    Parameters
+    ----------
+    matrix : scipy.sparse.csr_matrix
+        The sparse weight matrix.
+
+    Returns
+    -------
+    int
+        The number of non-zero elements.
+    """
+    return int(matrix.nnz)
+
+
 def _populate_cache_task(value: Any, key: str) -> None:
     """
     Internal worker task to populate the worker-local cache with a value.

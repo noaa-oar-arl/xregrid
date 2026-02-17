@@ -20,12 +20,14 @@ from xregrid.core import _apply_weights_core, _setup_worker_cache
 from xregrid.parallel import (
     _assemble_weights_task,
     _get_weights_sum_task,
+    _get_nnz_task,
     _compute_chunk_weights,
     _sync_cache_from_worker_data,
 )
 
 if TYPE_CHECKING:
-    pass
+    import dask.distributed
+    from scipy.sparse import csr_matrix
 
 # Global cache for the driver to store distributed futures
 # Keyed by (client_id, weight_key)
@@ -76,8 +78,10 @@ class Regridder:
     _dims_target: Optional[Tuple[str, ...]] = None
     _is_unstructured_src: bool = False
     _is_unstructured_tgt: bool = False
-    _total_weights: Optional[np.ndarray] = None
-    _weights_matrix: Optional[Any] = None
+    _total_weights: Optional[Union[np.ndarray, dask.distributed.Future]] = None
+    _weights_matrix: Optional[Union[csr_matrix, dask.distributed.Future]] = None
+    _dask_client: Optional[dask.distributed.Client] = None
+    _dask_futures: Optional[list[dask.distributed.Future]] = None
 
     def __init__(
         self,
@@ -959,13 +963,13 @@ class Regridder:
             self._total_weights = np.array(self._weights_matrix.sum(axis=1)).flatten()
 
     @property
-    def weights(self) -> Any:
+    def weights(self) -> csr_matrix:
         """
         Get the sparse weight matrix, gathering it from the cluster if necessary.
 
         Returns
         -------
-        scipy.sparse.csr_matrix
+        csr_matrix
             The regridding weight matrix.
         """
         if self._weights_matrix is None:
@@ -1088,22 +1092,38 @@ class Regridder:
         if self._weights_matrix is None:
             raise RuntimeError("Weights have not been generated yet.")
 
-        # If remote, we must gather for a report (which is typically eager)
-        # unless skip_heavy is True and we can get metadata from the Future
-        if hasattr(self._weights_matrix, "key") and not skip_heavy:
-            # Force gather to compute metrics
-            self.weights
+        # Aero Protocol: Distributed metrics.
+        # Compute metrics on the cluster if weights are remote to avoid driver OOM.
+        is_remote = hasattr(self._weights_matrix, "key")
 
         n_src = int(np.prod(self._shape_source))
         n_dst = int(np.prod(self._shape_target))
 
-        # Check if still remote after potential gather
-        is_remote = hasattr(self._weights_matrix, "key")
+        n_weights = -1
+        if is_remote:
+            if not skip_heavy:
+                # Compute nnz on cluster (Aero Protocol: Optimized Distributed Metrics)
+                try:
+                    import dask.distributed
+
+                    client = self._dask_client or dask.distributed.get_client()
+                    n_weights_future = client.submit(
+                        _get_nnz_task, self._weights_matrix
+                    )
+                    # We wait for the scalar result (Aero Protocol: Expected block for reports)
+                    n_weights = int(n_weights_future.result())
+                except (ImportError, ValueError, AttributeError):
+                    n_weights = -1
+            else:
+                # If skip_heavy=True and remote, we don't even do a roundtrip
+                n_weights = -1
+        else:
+            n_weights = int(self._weights_matrix.nnz)
 
         report = {
             "n_src": n_src,
             "n_dst": n_dst,
-            "n_weights": int(self._weights_matrix.nnz) if not is_remote else -1,
+            "n_weights": n_weights,
             "method": self.method,
             "periodic": self.periodic,
         }
