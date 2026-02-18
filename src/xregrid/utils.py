@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import os
 import socket
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 
@@ -18,6 +18,7 @@ def create_global_grid(
     res_lat: float,
     res_lon: float,
     add_bounds: bool = True,
+    chunks: Optional[Union[int, Dict[str, int]]] = None,
 ) -> xr.Dataset:
     """
     Create a global rectilinear grid dataset.
@@ -30,6 +31,9 @@ def create_global_grid(
         Longitude resolution in degrees.
     add_bounds : bool, default True
         Whether to add cell boundary coordinates.
+    chunks : int or dict, optional
+        Chunk sizes for the resulting dask-backed dataset.
+        If None (default), returns an eager NumPy-backed dataset.
 
     Returns
     -------
@@ -73,6 +77,9 @@ def create_global_grid(
 
     update_history(ds, f"Created global grid ({res_lat}x{res_lon}) using xregrid.")
 
+    if chunks is not None:
+        ds = ds.chunk(chunks)
+
     return ds
 
 
@@ -82,6 +89,7 @@ def create_regional_grid(
     res_lat: float,
     res_lon: float,
     add_bounds: bool = True,
+    chunks: Optional[Union[int, Dict[str, int]]] = None,
 ) -> xr.Dataset:
     """
     Create a regional rectilinear grid dataset.
@@ -98,6 +106,9 @@ def create_regional_grid(
         Longitude resolution in degrees.
     add_bounds : bool, default True
         Whether to add cell boundary coordinates.
+    chunks : int or dict, optional
+        Chunk sizes for the resulting dask-backed dataset.
+        If None (default), returns an eager NumPy-backed dataset.
 
     Returns
     -------
@@ -137,6 +148,9 @@ def create_regional_grid(
         ds["lon"].attrs["bounds"] = "lon_b"
 
     update_history(ds, f"Created regional grid ({res_lat}x{res_lon}) using xregrid.")
+
+    if chunks is not None:
+        ds = ds.chunk(chunks)
 
     return ds
 
@@ -294,6 +308,7 @@ def create_grid_from_crs(
     extent: Tuple[float, float, float, float],
     res: Union[float, Tuple[float, float]],
     add_bounds: bool = True,
+    chunks: Optional[Union[int, Dict[str, int]]] = None,
 ) -> xr.Dataset:
     """
     Create a structured grid dataset from a CRS and extent.
@@ -309,6 +324,9 @@ def create_grid_from_crs(
         If tuple, (res_x, res_y).
     add_bounds : bool, default True
         Whether to add cell boundary coordinates.
+    chunks : int or dict, optional
+        Chunk sizes for the resulting dask-backed dataset.
+        If None (default), returns an eager NumPy-backed dataset.
 
     Returns
     -------
@@ -407,6 +425,9 @@ def create_grid_from_crs(
 
     update_history(ds, f"Created grid from CRS {crs} using xregrid.")
 
+    if chunks is not None:
+        ds = ds.chunk(chunks)
+
     return ds
 
 
@@ -414,6 +435,7 @@ def create_mesh_from_coords(
     x: np.ndarray,
     y: np.ndarray,
     crs: Union[str, int, Any],
+    chunks: Optional[Union[int, Dict[str, int]]] = None,
 ) -> xr.Dataset:
     """
     Create an unstructured mesh dataset from coordinates and a CRS.
@@ -426,6 +448,9 @@ def create_mesh_from_coords(
         1D array of y coordinates in CRS units.
     crs : str, int, or pyproj.CRS
         The CRS of the coordinates.
+    chunks : int or dict, optional
+        Chunk sizes for the resulting dask-backed dataset.
+        If None (default), returns an eager NumPy-backed dataset.
 
     Returns
     -------
@@ -458,6 +483,9 @@ def create_mesh_from_coords(
     ds.attrs["crs"] = crs_obj.to_wkt()
 
     update_history(ds, f"Created mesh from coordinates and CRS {crs} using xregrid.")
+
+    if chunks is not None:
+        ds = ds.chunk(chunks)
 
     return ds
 
