@@ -1,7 +1,7 @@
 import numpy as np
-import pytest
 import xarray as xr
 from xregrid.utils import create_grid_from_crs, create_mesh_from_coords
+
 
 def test_create_grid_from_crs_lazy():
     """
@@ -13,7 +13,7 @@ def test_create_grid_from_crs_lazy():
     # Use a simple projected CRS (Web Mercator)
     crs = "EPSG:3857"
     extent = (0, 1000000, 0, 1000000)
-    res = 100000 # 100km resolution for test
+    res = 100000  # 100km resolution for test
 
     # 1. Eager (NumPy) - Default
     ds_eager = create_grid_from_crs(crs, extent, res, add_bounds=True)
@@ -32,6 +32,7 @@ def test_create_grid_from_crs_lazy():
     # We use a small tolerance for floating point variations if any,
     # but since it's the same core function it should be exact.
     xr.testing.assert_allclose(ds_eager, ds_lazy.compute())
+
 
 def test_create_mesh_from_coords_lazy():
     """
