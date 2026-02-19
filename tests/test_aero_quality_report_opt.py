@@ -5,7 +5,7 @@ from xregrid import Regridder, create_global_grid
 from unittest.mock import MagicMock, patch, PropertyMock
 
 
-def test_quality_report_no_gather_distributed(mocker):
+def test_quality_report_no_gather_distributed():
     """
     Aero Protocol: Verify that quality_report avoids gathering the full weight matrix.
     """
@@ -44,13 +44,15 @@ def test_quality_report_no_gather_distributed(mocker):
         },
         coords={"lat": np.arange(6), "lon": np.arange(12)},
     )
-    mocker.patch.object(regridder, "diagnostics", return_value=mock_diag)
 
     # 2. Call quality_report with a spy on the weights property
     # We use a simple attribute mock instead of property mock to avoid confusion
-    with patch.object(Regridder, "weights", new_callable=PropertyMock) as mock_weights:
-        # We need to make sure mock_weights doesn't trigger anything
-        report = regridder.quality_report(skip_heavy=False)
+    with patch.object(regridder, "diagnostics", return_value=mock_diag):
+        with patch.object(
+            Regridder, "weights", new_callable=PropertyMock
+        ) as mock_weights:
+            # We need to make sure mock_weights doesn't trigger anything
+            report = regridder.quality_report(skip_heavy=False)
 
     # 3. Verifications
     assert report["n_weights"] == 1234

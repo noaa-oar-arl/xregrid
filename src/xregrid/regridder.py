@@ -71,6 +71,7 @@ class Regridder:
     na_thres: float = 1.0
     periodic: bool = False
     provenance: list[str] = []
+    _uid: str = ""
 
     _shape_source: Optional[Tuple[int, ...]] = None
     _shape_target: Optional[Tuple[int, ...]] = None
@@ -183,6 +184,12 @@ class Regridder:
         self.compute_on_init = compute
         self.extrap_method = extrap_method
         self.extrap_dist_exponent = extrap_dist_exponent
+
+        # Generate a unique ID for this regridder instance to avoid cache collisions
+        # (Aero Protocol: Robustness against memory ID reuse in Dask clusters)
+        import uuid
+
+        self._uid = str(uuid.uuid4())
 
         # Determine coordinate system for consistency (Aero Protocol: Robustness)
         try:
@@ -1502,11 +1509,13 @@ class Regridder:
                     client = None
 
             if client is not None:
-                # Optimization: Identify weights by their Dask key if available, or memory ID
+                # Optimization: Identify weights by their Dask key if available, or instance UUID
                 if hasattr(self._weights_matrix, "key"):
                     weights_key_arg = f"weights_{self._weights_matrix.key}"
                 else:
-                    weights_key_arg = f"weights_{id(self._weights_matrix)}"
+                    # Use unique instance ID instead of id(self._weights_matrix)
+                    # to prevent collisions when memory IDs are reused across tests.
+                    weights_key_arg = f"weights_{self._uid}"
 
                 # Use client ID to ensure cache is valid for current cluster
                 client_id = getattr(client, "id", id(client))
@@ -1534,7 +1543,7 @@ class Regridder:
                     if hasattr(self._total_weights, "key"):
                         tw_key = f"tw_{self._total_weights.key}"
                     else:
-                        tw_key = f"tw_{id(self._total_weights)}"
+                        tw_key = f"tw_{self._uid}_sum"
 
                     if (client_id, tw_key) not in _DRIVER_CACHE:
                         if hasattr(self._total_weights, "key"):

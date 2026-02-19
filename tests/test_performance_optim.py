@@ -3,50 +3,50 @@ from xregrid.core import _apply_weights_core, _WORKER_CACHE, _matmul
 from scipy.sparse import csr_matrix
 import dask.distributed
 import xarray as xr
+from unittest.mock import patch
 
 
-def test_stationary_mask_caching(mocker):
+def test_stationary_mask_caching():
     """Verify that stationary mask normalization is cached across calls."""
     # Clear cache
     _WORKER_CACHE.clear()
 
     # Mock _matmul to count calls
-    mock_matmul = mocker.patch("xregrid.core._matmul", side_effect=_matmul)
+    with patch("xregrid.core._matmul", side_effect=_matmul) as mock_matmul:
+        # Create small synthetic data
+        data = np.ones((2, 4, 4), dtype=np.float32)
+        data[:, 0:2, 0:2] = np.nan  # Stationary mask
 
-    # Create small synthetic data
-    data = np.ones((2, 4, 4), dtype=np.float32)
-    data[:, 0:2, 0:2] = np.nan  # Stationary mask
+        # Mock weight matrix (16 -> 4)
+        weights = np.zeros((4, 16))
+        for i in range(4):
+            weights[i, i] = 1.0
+        weights_sparse = csr_matrix(weights)
 
-    # Mock weight matrix (16 -> 4)
-    weights = np.zeros((4, 16))
-    for i in range(4):
-        weights[i, i] = 1.0
-    weights_sparse = csr_matrix(weights)
+        weights_key = "test_weights_key"
+        _WORKER_CACHE[weights_key] = weights_sparse
 
-    weights_key = "test_weights_key"
-    _WORKER_CACHE[weights_key] = weights_sparse
+        # 1st call: should compute weights_sum and cache it
+        res1 = _apply_weights_core(
+            data[0:1], weights_key, ("lat", "lon"), (2, 2), skipna=True
+        )
 
-    # 1st call: should compute weights_sum and cache it
-    res1 = _apply_weights_core(
-        data[0:1], weights_key, ("lat", "lon"), (2, 2), skipna=True
-    )
+        # count should be 2: one for data, one for weights_sum
+        assert mock_matmul.call_count == 2
 
-    # count should be 2: one for data, one for weights_sum
-    assert mock_matmul.call_count == 2
+        # Reset mock count
+        mock_matmul.reset_mock()
 
-    # Reset mock count
-    mock_matmul.reset_mock()
+        # 2nd call: should use cached weights_sum
+        res2 = _apply_weights_core(
+            data[1:2], weights_key, ("lat", "lon"), (2, 2), skipna=True
+        )
 
-    # 2nd call: should use cached weights_sum
-    res2 = _apply_weights_core(
-        data[1:2], weights_key, ("lat", "lon"), (2, 2), skipna=True
-    )
+        # count should be 1: only for data
+        assert mock_matmul.call_count == 1
 
-    # count should be 1: only for data
-    assert mock_matmul.call_count == 1
-
-    # Verify results are identical
-    np.testing.assert_allclose(res1, res2)
+        # Verify results are identical
+        np.testing.assert_allclose(res1, res2)
 
 
 def test_memory_efficiency_broadcasting():
@@ -63,7 +63,7 @@ def test_memory_efficiency_broadcasting():
     assert res[0, 1, 1] == 1.0
 
 
-def test_dask_stationary_mask_caching(mocker):
+def test_dask_stationary_mask_caching():
     """Verify stationary mask caching works with Dask-backed data."""
     from xregrid.regridder import Regridder
 
@@ -75,7 +75,6 @@ def test_dask_stationary_mask_caching(mocker):
 
     try:
         _WORKER_CACHE.clear()
-        mock_matmul = mocker.patch("xregrid.core._matmul", side_effect=_matmul)
 
         # Identity-like weight matrix
         weights = csr_matrix(np.eye(4, 16))
@@ -96,35 +95,36 @@ def test_dask_stationary_mask_caching(mocker):
                 self.name = name
 
         # Mock Regridder internally
-        mocker.patch("xregrid.regridder.Regridder._generate_weights", return_value=None)
-        mocker.patch(
-            "xregrid.regridder.Regridder._get_mesh_info",
-            side_effect=[
-                (MockObj("src"), ["src"], (4, 4), ("lat", "lon"), False),
-                (MockObj("dst"), ["dst"], (2, 2), ("lat", "lon"), False),
-            ],
-        )
+        with patch.object(Regridder, "_generate_weights", return_value=None):
+            with patch.object(
+                Regridder,
+                "_get_mesh_info",
+                side_effect=[
+                    (MockObj("src"), ["src"], (4, 4), ("lat", "lon"), False),
+                    (MockObj("dst"), ["dst"], (2, 2), ("lat", "lon"), False),
+                ],
+            ):
+                with patch("xregrid.core._matmul", side_effect=_matmul) as mock_matmul:
+                    regridder = Regridder(ds_src, ds_dst, skipna=True)
+                    # Inject our known state
+                    regridder._weights_matrix = weights
+                    regridder._dims_source = ("lat", "lon")
+                    regridder._dims_target = ("lat", "lon")
+                    regridder._shape_target = (2, 2)
+                    regridder._total_weights = np.array(weights.sum(axis=1)).T
 
-        regridder = Regridder(ds_src, ds_dst, skipna=True)
-        # Inject our known state
-        regridder._weights_matrix = weights
-        regridder._dims_source = ("lat", "lon")
-        regridder._dims_target = ("lat", "lon")
-        regridder._shape_target = (2, 2)
-        regridder._total_weights = np.array(weights.sum(axis=1)).T
+                    # Apply regridding
+                    out = regridder(da)
 
-        # Apply regridding
-        out = regridder(da)
+                    # Trigger compute
+                    res = out.compute()
 
-        # Trigger compute
-        res = out.compute()
+                    # Verify results
+                    assert res.shape == (4, 2, 2)
+                    assert np.isnan(res[0, 0, 0])
 
-        # Verify results
-        assert res.shape == (4, 2, 2)
-        assert np.isnan(res[0, 0, 0])
-
-        # Verify calls
-        assert mock_matmul.call_count == 5
+                    # Verify calls
+                    assert mock_matmul.call_count == 5
 
     finally:
         client.close()
