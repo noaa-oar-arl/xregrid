@@ -40,9 +40,9 @@ def test_aero_lazy_initialization():
 
     # Check that source_grid_ds coordinates are still dask-backed
     # Unstructured grids should skip _normalize_grid, so they should remain lazy
-    assert hasattr(
-        regridder.source_grid_ds.lat.data, "dask"
-    ), "Source latitude should remain lazy"
+    assert hasattr(regridder.source_grid_ds.lat.data, "dask"), (
+        "Source latitude should remain lazy"
+    )
 
 
 def test_aero_double_check_identity():
