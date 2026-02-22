@@ -30,6 +30,15 @@ test = [
     "pooch",
     "pre-commit",
 ]
+docs = [
+    "zensical",
+    "mkdocstrings",
+    "mkdocstrings-python",
+    "mkdocs-gallery",
+    "matplotlib",
+    "cartopy",
+    "pooch",
+]
 viz = [
     "matplotlib",
     "cartopy",

@@ -36,7 +36,7 @@ jobs:
       - name: Install documentation dependencies
         shell: bash -l {0}
         run: |
-          micromamba run -n xregrid-env pip install mkdocs mkdocs-material mkdocs-gallery mkdocs-autorefs mkdocstrings mkdocstrings-python matplotlib cartopy pooch
+          micromamba run -n xregrid-env pip install zensical mkdocs-gallery mkdocs-autorefs mkdocstrings mkdocstrings-python matplotlib cartopy pooch
 
       - name: Install package
         shell: bash -l {0}
@@ -65,7 +65,7 @@ jobs:
           ast.Num = getattr(ast, 'Num', ast.Constant); \
           ast.Bytes = getattr(ast, 'Bytes', ast.Constant); \
           ast.NameConstant = getattr(ast, 'NameConstant', ast.Constant); \
-          from mkdocs.__main__ import cli; cli()" build --clean
+          import subprocess; subprocess.run(['zensical', 'build', '--clean'], check=True)"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

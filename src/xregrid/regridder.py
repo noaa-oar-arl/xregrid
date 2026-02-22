@@ -1099,19 +1099,27 @@ class Regridder:
         n_src = int(np.prod(self._shape_source))
         n_dst = int(np.prod(self._shape_target))
 
-        n_weights = -1
+        n_weights: Any = -1
         if is_remote:
             if not skip_heavy:
                 # Compute nnz on cluster
                 try:
+                    import dask.array as da
                     import dask.distributed
 
                     client = self._dask_client or dask.distributed.get_client()
                     n_weights_future = client.submit(
                         _get_nnz_task, self._weights_matrix
                     )
-                    # We wait for the scalar result
-                    n_weights = int(n_weights_future.result())
+
+                    if format == "dataset":
+                        # Preserve laziness for dataset output
+                        n_weights = da.from_delayed(
+                            dask.delayed(n_weights_future), shape=(), dtype=int
+                        )
+                    else:
+                        # For dict, we still need to wait to satisfy return type
+                        n_weights = int(n_weights_future.result())
                 except (ImportError, ValueError, AttributeError):
                     n_weights = -1
             else:
@@ -1120,7 +1128,7 @@ class Regridder:
         else:
             n_weights = int(self._weights_matrix.nnz)
 
-        report = {
+        report: dict[str, Any] = {
             "n_src": n_src,
             "n_dst": n_dst,
             "n_weights": n_weights,
@@ -1133,27 +1141,57 @@ class Regridder:
             weights_sum = ds_diag.weight_sum
             unmapped_mask = ds_diag.unmapped_mask
 
-            unmapped_count = int(unmapped_mask.sum())
+            unmapped_count = unmapped_mask.sum()
+            unmapped_fraction = unmapped_count / n_dst
 
-            report.update(
-                {
-                    "unmapped_count": unmapped_count,
-                    "unmapped_fraction": float(unmapped_count / n_dst),
-                    "weight_sum_min": float(weights_sum.where(unmapped_mask == 0).min())
-                    if unmapped_count < n_dst
-                    else 0.0,
-                    "weight_sum_max": float(weights_sum.max()),
-                    "weight_sum_mean": float(weights_sum.mean()),
-                }
-            )
+            # Handle min only where mapped to avoid NaN-related issues in min()
+            weight_sum_min = weights_sum.where(unmapped_mask == 0).min()
+            weight_sum_max = weights_sum.max()
+            weight_sum_mean = weights_sum.mean()
+
+            if format == "dict":
+                # Convert to eager values for dict format
+                report.update(
+                    {
+                        "unmapped_count": int(unmapped_count),
+                        "unmapped_fraction": float(unmapped_fraction),
+                        "weight_sum_min": float(weight_sum_min)
+                        if int(unmapped_count) < n_dst
+                        else 0.0,
+                        "weight_sum_max": float(weight_sum_max),
+                        "weight_sum_mean": float(weight_sum_mean),
+                    }
+                )
+            else:
+                # Keep as DataArrays for dataset format
+                report.update(
+                    {
+                        "unmapped_count": unmapped_count,
+                        "unmapped_fraction": unmapped_fraction,
+                        "weight_sum_min": weight_sum_min,
+                        "weight_sum_max": weight_sum_max,
+                        "weight_sum_mean": weight_sum_mean,
+                    }
+                )
 
         if format == "dataset":
+            # For Dataset output, ensure all metrics are properly handled as variables
+            ds_vars = {}
+            for k, v in report.items():
+                if isinstance(v, (str, bool)):
+                    continue
+
+                if isinstance(v, xr.DataArray):
+                    # Variable is already a DataArray
+                    da = v.copy()
+                    da.attrs["description"] = f"Quality metric: {k}"
+                    ds_vars[k] = da
+                else:
+                    # Variable is a scalar or raw array (e.g. Dask array)
+                    ds_vars[k] = ([], v, {"description": f"Quality metric: {k}"})
+
             ds_report = xr.Dataset(
-                data_vars={
-                    k: ([], v, {"description": f"Quality metric: {k}"})
-                    for k, v in report.items()
-                    if isinstance(v, (int, float)) or np.issubdtype(type(v), np.number)
-                },
+                data_vars=ds_vars,
                 attrs={
                     "method": self.method,
                     "periodic": int(self.periodic),

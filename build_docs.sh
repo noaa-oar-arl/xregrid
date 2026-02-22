@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-echo "XRegrid Documentation Builder"
-echo "=============================="
+echo "XRegrid Documentation Builder (Zensical Edition)"
+echo "==============================================="
 
 # Check if we are in a conda environment, if not try to activate
 if [[ -z "$CONDA_DEFAULT_ENV" ]]; then
@@ -13,11 +13,10 @@ fi
 
 # Install documentation dependencies if needed
 echo "Checking documentation dependencies..."
-pip install mkdocs mkdocs-material mkdocs-gallery mkdocs-autorefs mkdocstrings mkdocstrings-python matplotlib cartopy pooch --quiet
+pip install zensical mkdocstrings mkdocstrings-python mkdocs-gallery matplotlib cartopy pooch --quiet
 
 # Install package in development mode
 echo "Installing xregrid package..."
-# We use --no-deps because we assume environment is already set up or we don't want to fail on binary deps like esmpy
 pip install -e . --quiet --no-deps || echo "Warning: Could not install in editable mode."
 
 # Clean previous build
@@ -25,20 +24,21 @@ echo "Cleaning previous build..."
 rm -rf site/
 
 # Build documentation
-echo "Building documentation..."
-# Workaround for Python 3.14 compatibility with mkdocs-gallery
-# ast.Str was removed in 3.14, so we monkeypatch it if necessary
+echo "Building documentation with Zensical..."
 export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+
+# Monkeypatch for mkdocs-gallery compatibility if needed (applied to current python process)
+# and then call zensical CLI
 python -c "import ast; \
 ast.Str = getattr(ast, 'Str', ast.Constant); \
 ast.Num = getattr(ast, 'Num', ast.Constant); \
 ast.Bytes = getattr(ast, 'Bytes', ast.Constant); \
 ast.NameConstant = getattr(ast, 'NameConstant', ast.Constant); \
-from mkdocs.__main__ import cli; cli()" build --clean
+import subprocess; subprocess.run(['zensical', 'build', '--clean'], check=True)"
 
 echo ""
 echo "Documentation built successfully!"
-echo "To serve locally: mkdocs serve"
-echo "To deploy: mkdocs gh-deploy"
+echo "To serve locally: zensical serve"
+echo "To deploy: zensical build && # follow zensical deployment guide"
 echo ""
 echo "Built site is in: ./site/"

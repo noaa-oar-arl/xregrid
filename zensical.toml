@@ -1,0 +1,88 @@
+[project]
+site_name = "XRegrid Documentation"
+site_url = "https://xregrid.readthedocs.io"
+site_author = "XRegrid Contributors"
+site_description = "An optimized ESMF-based regridder for xarray"
+repo_name = "xregrid/xregrid"
+repo_url = "https://github.com/xregrid/xregrid"
+
+nav = [
+    { "Home" = "index.md" },
+    { "Installation" = "installation.md" },
+    { "User Guide" = [
+        { "Quick Start" = "user-guide/quickstart.md" },
+        { "Command Line Interface" = "user-guide/cli.md" },
+        { "Unstructured Grids" = "user-guide/unstructured.md" },
+        { "Performance" = "user-guide/performance.md" }
+    ]},
+    { "Examples" = [
+        { "Gallery" = "examples/generated/index.md" }
+    ]},
+    { "API Reference" = [
+        { "Regridder" = "api/regridder.md" },
+        { "Utilities" = "api/utils.md" }
+    ]}
+]
+
+extra_css = ["stylesheets/extra.css"]
+
+[project.theme]
+name = "material"
+features = [
+    "navigation.tabs",
+    "navigation.sections",
+    "navigation.expand",
+    "navigation.path",
+    "navigation.top",
+    "search.highlight",
+    "search.share",
+    "content.code.copy",
+    "content.code.select"
+]
+
+[[project.theme.palette]]
+scheme = "default"
+primary = "blue"
+accent = "blue"
+toggle.icon = "material/brightness-7"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "blue"
+accent = "blue"
+toggle.icon = "material/brightness-4"
+toggle.name = "Switch to light mode"
+
+[project.plugins.search]
+[project.plugins.gallery]
+examples_dirs = "docs/examples/scripts"
+gallery_dirs = "docs/examples/generated"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "numpy"
+show_source = true
+show_root_heading = true
+show_root_toc_entry = false
+
+[project.markdown_extensions]
+admonition = {}
+"pymdownx.details" = {}
+"pymdownx.superfences" = { custom_fences = [ { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" } ] }
+"pymdownx.tabbed" = { alternate_style = true }
+"pymdownx.highlight" = { anchor_linenums = true, line_spans = "__span", pygments_lang_class = true }
+"pymdownx.inlinehilite" = {}
+"pymdownx.snippets" = {}
+tables = {}
+attr_list = {}
+md_in_html = {}
+toc = { permalink = true }
+
+[project.extra]
+version = { provider = "mike" }
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/xregrid/xregrid"
