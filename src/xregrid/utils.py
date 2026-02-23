@@ -14,6 +14,99 @@ except ImportError:
 import xarray as xr
 
 
+def _create_rectilinear_grid(
+    lat_range: Tuple[float, float],
+    lon_range: Tuple[float, float],
+    res_lat: float,
+    res_lon: float,
+    add_bounds: bool = True,
+    chunks: Optional[Union[int, Dict[str, int]]] = None,
+    history_msg: str = "",
+    crs: str = "EPSG:4326",
+) -> xr.Dataset:
+    """
+    Internal helper to create rectilinear grids with consistent metadata.
+
+    Parameters
+    ----------
+    lat_range : tuple of float
+        (min_lat, max_lat).
+    lon_range : tuple of float
+        (min_lon, max_lon).
+    res_lat : float
+        Latitude resolution in degrees.
+    res_lon : float
+        Longitude resolution in degrees.
+    add_bounds : bool, default True
+        Whether to add cell boundary coordinates.
+    chunks : int or dict, optional
+        Chunk sizes for the resulting dask-backed dataset.
+    history_msg : str, optional
+        Message to add to the history attribute.
+
+    Returns
+    -------
+    xr.Dataset
+        The generated grid dataset.
+    """
+    lat = np.arange(lat_range[0] + res_lat / 2, lat_range[1], res_lat)
+    lon = np.arange(lon_range[0] + res_lon / 2, lon_range[1], res_lon)
+
+    ds = xr.Dataset(
+        coords={
+            "lat": (
+                ["lat"],
+                lat,
+                {"units": "degrees_north", "standard_name": "latitude"},
+            ),
+            "lon": (
+                ["lon"],
+                lon,
+                {"units": "degrees_east", "standard_name": "longitude"},
+            ),
+        }
+    )
+
+    if add_bounds:
+        # Use CF-compliant (N, 2) bounds.
+        lat_b_1d = np.arange(lat_range[0], lat_range[1] + res_lat, res_lat)
+        lon_b_1d = np.arange(lon_range[0], lon_range[1] + res_lon, res_lon)
+
+        # Handle potential floating point overshoot from np.arange
+        if len(lat_b_1d) > len(lat) + 1:
+            lat_b_1d = lat_b_1d[: len(lat) + 1]
+        if len(lon_b_1d) > len(lon) + 1:
+            lon_b_1d = lon_b_1d[: len(lon) + 1]
+
+        lat_b_2d = np.stack([lat_b_1d[:-1], lat_b_1d[1:]], axis=1)
+        lon_b_2d = np.stack([lon_b_1d[:-1], lon_b_1d[1:]], axis=1)
+
+        ds.coords["lat_b"] = (
+            ["lat", "nv"],
+            lat_b_2d,
+            {"units": "degrees_north", "standard_name": "latitude_bounds"},
+        )
+        ds.coords["lon_b"] = (
+            ["lon", "nv"],
+            lon_b_2d,
+            {"units": "degrees_east", "standard_name": "longitude_bounds"},
+        )
+
+        ds["lat"].attrs["bounds"] = "lat_b"
+        ds["lon"].attrs["bounds"] = "lon_b"
+
+    # Aero Protocol: Explicit CRS attribution
+    ds.attrs["crs"] = crs
+
+    if history_msg:
+        update_history(ds, history_msg)
+
+    if chunks is not None:
+        ds = ds.chunk(chunks)
+
+    return ds
+
+
 def create_global_grid(
     res_lat: float,
     res_lon: float,
@@ -40,46 +133,15 @@ def create_global_grid(
     xr.Dataset
         The global grid dataset containing 'lat' and 'lon'.
     """
-    lat = np.arange(-90 + res_lat / 2, 90, res_lat)
-    lon = np.arange(0 + res_lon / 2, 360, res_lon)
-
-    ds = xr.Dataset(
-        coords={
-            "lat": (
-                ["lat"],
-                lat,
-                {"units": "degrees_north", "standard_name": "latitude"},
-            ),
-            "lon": (
-                ["lon"],
-                lon,
-                {"units": "degrees_east", "standard_name": "longitude"},
-            ),
-        }
+    return _create_rectilinear_grid(
+        lat_range=(-90, 90),
+        lon_range=(0, 360),
+        res_lat=res_lat,
+        res_lon=res_lon,
+        add_bounds=add_bounds,
+        chunks=chunks,
+        history_msg=f"Created global grid ({res_lat}x{res_lon}) using xregrid.",
     )
-
-    if add_bounds:
-        # Use CF-compliant (N, 2) bounds that share dimensions with the grid.
-        # This ensures they are correctly subsetted and sorted by xarray.
-        lat_b_1d = np.arange(-90, 90 + res_lat, res_lat)
-        lon_b_1d = np.arange(0, 360 + res_lon, res_lon)
-
-        lat_b_2d = np.stack([lat_b_1d[:-1], lat_b_1d[1:]], axis=1)
-        lon_b_2d = np.stack([lon_b_1d[:-1], lon_b_1d[1:]], axis=1)
-
-        ds.coords["lat_b"] = (["lat", "nv"], lat_b_2d, {"units": "degrees_north"})
-        ds.coords["lon_b"] = (["lon", "nv"], lon_b_2d, {"units": "degrees_east"})
-
-        # Link bounds using cf-xarray convention
-        ds["lat"].attrs["bounds"] = "lat_b"
-        ds["lon"].attrs["bounds"] = "lon_b"
-
-    update_history(ds, f"Created global grid ({res_lat}x{res_lon}) using xregrid.")
-
-    if chunks is not None:
-        ds = ds.chunk(chunks)
-
-    return ds
 
 
 def create_regional_grid(
@@ -114,44 +176,15 @@ def create_regional_grid(
     xr.Dataset
         The regional grid dataset containing 'lat' and 'lon'.
     """
-    lat = np.arange(lat_range[0] + res_lat / 2, lat_range[1], res_lat)
-    lon = np.arange(lon_range[0] + res_lon / 2, lon_range[1], res_lon)
-
-    ds = xr.Dataset(
-        coords={
-            "lat": (
-                ["lat"],
-                lat,
-                {"units": "degrees_north", "standard_name": "latitude"},
-            ),
-            "lon": (
-                ["lon"],
-                lon,
-                {"units": "degrees_east", "standard_name": "longitude"},
-            ),
-        }
+    return _create_rectilinear_grid(
+        lat_range=lat_range,
+        lon_range=lon_range,
+        res_lat=res_lat,
+        res_lon=res_lon,
+        add_bounds=add_bounds,
+        chunks=chunks,
+        history_msg=f"Created regional grid ({res_lat}x{res_lon}) using xregrid.",
     )
-
-    if add_bounds:
-        # Use CF-compliant (N, 2) bounds.
-        lat_b_1d = np.arange(lat_range[0], lat_range[1] + res_lat, res_lat)
-        lon_b_1d = np.arange(lon_range[0], lon_range[1] + res_lon, res_lon)
-
-        lat_b_2d = np.stack([lat_b_1d[:-1], lat_b_1d[1:]], axis=1)
-        lon_b_2d = np.stack([lon_b_1d[:-1], lon_b_1d[1:]], axis=1)
-
-        ds.coords["lat_b"] = (["lat", "nv"], lat_b_2d, {"units": "degrees_north"})
-        ds.coords["lon_b"] = (["lon", "nv"], lon_b_2d, {"units": "degrees_east"})
-
-        ds["lat"].attrs["bounds"] = "lat_b"
-        ds["lon"].attrs["bounds"] = "lon_b"
-
-    update_history(ds, f"Created regional grid ({res_lat}x{res_lon}) using xregrid.")
-
-    if chunks is not None:
-        ds = ds.chunk(chunks)
-
-    return ds
 
 
 def load_esmf_file(filepath: str) -> xr.Dataset:
@@ -574,6 +607,215 @@ def create_grid_from_ioapi(
     update_history(ds, f"Created grid from IOAPI metadata (GDTYP={gdtyp})")
 
     return ds
+
+
+def create_grid_like(
+    obj: Union[xr.DataArray, xr.Dataset],
+    res: Union[float, Tuple[float, float]],
+    add_bounds: bool = True,
+    chunks: Optional[Union[int, Dict[str, int]]] = None,
+) -> xr.Dataset:
+    """
+    Create a new grid dataset with the same extent and CRS as an existing object.
+
+    Automatically detects the CRS and spatial extent of the input object.
+    Supports both geographic (lat-lon) and projected coordinate systems.
+
+    Parameters
+    ----------
+    obj : xr.DataArray or xr.Dataset
+        The input object to use as a template.
+    res : float or tuple of float
+        New grid resolution in the coordinate system units.
+        If tuple, (res_x, res_y) or (res_lon, res_lat).
+    add_bounds : bool, default True
+        Whether to add cell boundary coordinates.
+    chunks : int or dict, optional
+        Chunk sizes for the resulting dask-backed dataset.
+
+    Returns
+    -------
+    xr.Dataset
+        The new grid dataset.
+    """
+    crs_obj = get_crs_info(obj)
+
+    if isinstance(res, (int, float)):
+        res_x = res_y = float(res)
+    else:
+        res_x, res_y = map(float, res)
+
+    # 1. Try to find projected coordinates
+    try:
+        x_da = obj.cf["projection_x_coordinate"]
+        y_da = obj.cf["projection_y_coordinate"]
+
+        try:
+            # Use bounds for exact extent if available
+            x_b = obj.cf.get_bounds("projection_x_coordinate")
+            y_b = obj.cf.get_bounds("projection_y_coordinate")
+
+            # Batch compute if lazy to minimize roundtrips
+            if hasattr(x_b.data, "dask") or hasattr(y_b.data, "dask"):
+                try:
+                    import dask
+
+                    x_min, x_max, y_min, y_max = dask.compute(
+                        x_b.min(), x_b.max(), y_b.min(), y_b.max()
+                    )
+                    extent = (float(x_min), float(x_max), float(y_min), float(y_max))
+                except ImportError:
+                    extent = (
+                        float(x_b.min()),
+                        float(x_b.max()),
+                        float(y_b.min()),
+                        float(y_b.max()),
+                    )
+            else:
+                extent = (
+                    float(x_b.min()),
+                    float(x_b.max()),
+                    float(y_b.min()),
+                    float(y_b.max()),
+                )
+        except Exception:
+            # Fallback to centers
+            if x_da.size > 1:
+                res_x_orig = abs(float(x_da.diff(x_da.dims[0]).mean()))
+            else:
+                res_x_orig = 0
+            if y_da.size > 1:
+                res_y_orig = abs(float(y_da.diff(y_da.dims[0]).mean()))
+            else:
+                res_y_orig = res_x_orig
+
+            # Batch compute centers if lazy
+            if hasattr(x_da.data, "dask") or hasattr(y_da.data, "dask"):
+                try:
+                    import dask
+
+                    x_min, x_max, y_min, y_max = dask.compute(
+                        x_da.min(), x_da.max(), y_da.min(), y_da.max()
+                    )
+                    extent = (
+                        float(x_min) - res_x_orig / 2,
+                        float(x_max) + res_x_orig / 2,
+                        float(y_min) - res_y_orig / 2,
+                        float(y_max) + res_y_orig / 2,
+                    )
+                except ImportError:
+                    extent = (
+                        float(x_da.min()) - res_x_orig / 2,
+                        float(x_da.max()) + res_x_orig / 2,
+                        float(y_da.min()) - res_y_orig / 2,
+                        float(y_da.max()) + res_y_orig / 2,
+                    )
+            else:
+                extent = (
+                    float(x_da.min()) - res_x_orig / 2,
+                    float(x_da.max()) + res_x_orig / 2,
+                    float(y_da.min()) - res_y_orig / 2,
+                    float(y_da.max()) + res_y_orig / 2,
+                )
+
+        if crs_obj is None:
+            # Fallback to generic geographic if no CRS found
+            crs_obj = "EPSG:4326"
+
+        return create_grid_from_crs(
+            crs_obj, extent, (res_x, res_y), add_bounds=add_bounds, chunks=chunks
+        )
+
+    except (KeyError, AttributeError, ValueError):
+        pass
+
+    # 2. Fallback to Geographic (Lat-Lon)
+    try:
+        lat_da = obj.cf["latitude"]
+        lon_da = obj.cf["longitude"]
+
+        try:
+            lat_b = obj.cf.get_bounds("latitude")
+            lon_b = obj.cf.get_bounds("longitude")
+
+            if hasattr(lat_b.data, "dask") or hasattr(lon_b.data, "dask"):
+                try:
+                    import dask
+
+                    lat_min, lat_max, lon_min, lon_max = dask.compute(
+                        lat_b.min(), lat_b.max(), lon_b.min(), lon_b.max()
+                    )
+                    lat_range = (float(lat_min), float(lat_max))
+                    lon_range = (float(lon_min), float(lon_max))
+                except ImportError:
+                    lat_range = (float(lat_b.min()), float(lat_b.max()))
+                    lon_range = (float(lon_b.min()), float(lon_b.max()))
+            else:
+                lat_range = (float(lat_b.min()), float(lat_b.max()))
+                lon_range = (float(lon_b.min()), float(lon_b.max()))
+        except Exception:
+            # Heuristic for resolution to calculate extent from centers
+            if lat_da.size > 1:
+                res_lat_orig = abs(float(lat_da.diff(lat_da.dims[0]).mean()))
+            else:
+                res_lat_orig = 0
+            if lon_da.size > 1:
+                res_lon_orig = abs(float(lon_da.diff(lon_da.dims[-1]).mean()))
+            else:
+                res_lon_orig = res_lat_orig
+
+            if hasattr(lat_da.data, "dask") or hasattr(lon_da.data, "dask"):
+                try:
+                    import dask
+
+                    lat_min, lat_max, lon_min, lon_max = dask.compute(
+                        lat_da.min(), lat_da.max(), lon_da.min(), lon_da.max()
+                    )
+                    lat_range = (
+                        float(lat_min) - res_lat_orig / 2,
+                        float(lat_max) + res_lat_orig / 2,
+                    )
+                    lon_range = (
+                        float(lon_min) - res_lon_orig / 2,
+                        float(lon_max) + res_lon_orig / 2,
+                    )
+                except ImportError:
+                    lat_range = (
+                        float(lat_da.min()) - res_lat_orig / 2,
+                        float(lat_da.max()) + res_lat_orig / 2,
+                    )
+                    lon_range = (
+                        float(lon_da.min()) - res_lon_orig / 2,
+                        float(lon_da.max()) + res_lon_orig / 2,
+                    )
+            else:
+                lat_range = (
+                    float(lat_da.min()) - res_lat_orig / 2,
+                    float(lat_da.max()) + res_lat_orig / 2,
+                )
+                lon_range = (
+                    float(lon_da.min()) - res_lon_orig / 2,
+                    float(lon_da.max()) + res_lon_orig / 2,
+                )
+
+        return _create_rectilinear_grid(
+            lat_range,
+            lon_range,
+            res_y,  # res_lat
+            res_x,  # res_lon
+            add_bounds=add_bounds,
+            chunks=chunks,
+            crs=crs_obj.to_wkt() if crs_obj else "EPSG:4326",
+            history_msg=(
+                f"Created grid like {obj.name if hasattr(obj, 'name') else 'input'} "
+                "using xregrid."
+            ),
+        )
+    except (KeyError, AttributeError, ValueError):
+        raise ValueError(
+            "Could not detect spatial coordinates (latitude/longitude or "
+            "projection_x/y) in input object."
+        )
 
 
 def create_mesh_from_coords(
