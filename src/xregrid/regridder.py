@@ -1651,30 +1651,48 @@ class Regridder:
         target_gm_name = None
         target_mesh_name = None
 
-        for c in self.target_grid_ds.coords:
-            # Include coordinates that match target dimensions OR are scalar
-            if set(self.target_grid_ds.coords[c].dims).issubset(set(self._dims_target)):
-                target_coords_to_assign[c] = self.target_grid_ds.coords[c]
-                # Identify if this is a grid_mapping coordinate
-                if "grid_mapping_name" in self.target_grid_ds.coords[c].attrs:
-                    target_gm_name = c
-                # Identify UGRID mesh topology in coords
-                if (
-                    self.target_grid_ds.coords[c].attrs.get("cf_role")
-                    == "mesh_topology"
-                ):
-                    target_mesh_name = c
+        # 1. First Pass: Identify topology and grid mapping from target grid
+        for v in list(self.target_grid_ds.coords) + list(self.target_grid_ds.data_vars):
+            var_obj = self.target_grid_ds[v]
+            if "grid_mapping_name" in var_obj.attrs:
+                target_gm_name = v
+            if var_obj.attrs.get("cf_role") == "mesh_topology":
+                target_mesh_name = v
 
-        # Also check data_vars in target_grid_ds for grid_mapping or mesh topology
-        for v in self.target_grid_ds.data_vars:
-            if "grid_mapping_name" in self.target_grid_ds[v].attrs:
-                if target_gm_name is None:
-                    target_gm_name = v
-                    target_coords_to_assign[v] = self.target_grid_ds[v]
-            if self.target_grid_ds[v].attrs.get("cf_role") == "mesh_topology":
-                if target_mesh_name is None:
-                    target_mesh_name = v
-                    target_coords_to_assign[v] = self.target_grid_ds[v]
+        # 2. Second Pass: Assign relevant coordinates to output
+        for c in self.target_grid_ds.coords:
+            # Include coordinates that match target dimensions OR are scalar/mapping
+            if set(self.target_grid_ds.coords[c].dims).issubset(
+                set(self._dims_target)
+            ) or c in [target_gm_name, target_mesh_name]:
+                target_coords_to_assign[c] = self.target_grid_ds.coords[c]
+
+        # Also check data_vars for topology/mapping that might be needed as coords
+        for v in [target_gm_name, target_mesh_name]:
+            if v and v in self.target_grid_ds.data_vars:
+                target_coords_to_assign[v] = self.target_grid_ds[v]
+
+        # Ensure all variables referenced by the mesh topology are also included
+        if target_mesh_name:
+            topology_attrs = self.target_grid_ds[target_mesh_name].attrs
+            for attr in [
+                "face_node_connectivity",
+                "edge_node_connectivity",
+                "face_face_connectivity",
+                "face_edge_connectivity",
+                "edge_face_connectivity",
+                "node_coordinates",
+                "face_coordinates",
+                "edge_coordinates",
+            ]:
+                if attr in topology_attrs:
+                    ref_vars = topology_attrs[attr].split()
+                    for rv in ref_vars:
+                        if (
+                            rv in self.target_grid_ds
+                            and rv not in target_coords_to_assign
+                        ):
+                            target_coords_to_assign[rv] = self.target_grid_ds[rv]
 
         out = out.assign_coords(target_coords_to_assign)
 
@@ -1684,11 +1702,9 @@ class Regridder:
             if "grid_mapping" in out.encoding:
                 out.encoding["grid_mapping"] = target_gm_name
         else:
-            # If target has no grid mapping, remove source one as it's no longer valid for this grid
-            if "grid_mapping" in out.attrs:
-                del out.attrs["grid_mapping"]
-            if "grid_mapping" in out.encoding:
-                del out.encoding["grid_mapping"]
+            # Remove stale source grid_mapping
+            out.attrs.pop("grid_mapping", None)
+            out.encoding.pop("grid_mapping", None)
 
         if target_mesh_name:
             out.attrs["mesh"] = target_mesh_name
@@ -1699,11 +1715,9 @@ class Regridder:
             else:
                 out.attrs["location"] = "node"
         else:
-            # Remove source UGRID attributes if target is not UGRID
-            if "mesh" in out.attrs:
-                del out.attrs["mesh"]
-            if "location" in out.attrs:
-                del out.attrs["location"]
+            # Remove stale source UGRID attributes
+            out.attrs.pop("mesh", None)
+            out.attrs.pop("location", None)
 
         # Propagate CRS metadata
         target_crs_obj = get_crs_info(self.target_grid_ds)
@@ -1783,6 +1797,18 @@ class Regridder:
                 regridded_items[name] = da
                 continue
 
+            # Skip UGRID topology/connectivity variables
+            if da.attrs.get("cf_role") in [
+                "mesh_topology",
+                "face_node_connectivity",
+                "edge_node_connectivity",
+                "face_face_connectivity",
+                "face_edge_connectivity",
+                "edge_face_connectivity",
+            ]:
+                regridded_items[name] = da
+                continue
+
             # CF-Awareness: Check for spatial dimensions using logical axes
             is_regriddable = False
             if all(dim in da.dims for dim in self._dims_source):
@@ -1846,36 +1872,45 @@ class Regridder:
         # 3. Handle grid_mapping and scalar coordinates from target grid
         target_gm_name = None
         target_mesh_name = None
+
+        # Identify topology and grid mapping from target grid
+        for v in list(self.target_grid_ds.coords) + list(self.target_grid_ds.data_vars):
+            var_obj = self.target_grid_ds[v]
+            if "grid_mapping_name" in var_obj.attrs:
+                target_gm_name = v
+            if var_obj.attrs.get("cf_role") == "mesh_topology":
+                target_mesh_name = v
+
         for c in self.target_grid_ds.coords:
             if c not in out.coords:
                 if set(self.target_grid_ds.coords[c].dims).issubset(
                     set(self._dims_target)
-                ):
-                    out = out.assign_coords({c: self.target_grid_ds.coords[c]})
+                ) or c in [target_gm_name, target_mesh_name]:
+                    out = out.assign_coords({c: self.target_grid_ds[c]})
 
-            # Identify target grid mapping variable
-            if "grid_mapping_name" in self.target_grid_ds.coords[c].attrs:
-                target_gm_name = c
-            # Identify UGRID mesh topology
-            if self.target_grid_ds.coords[c].attrs.get("cf_role") == "mesh_topology":
-                target_mesh_name = c
+        # Ensure mapping/topology vars from data_vars are also attached if needed
+        for v in [target_gm_name, target_mesh_name]:
+            if v and v in self.target_grid_ds.data_vars and v not in out.coords:
+                out = out.assign_coords({v: self.target_grid_ds[v]})
 
-        # Also check target data_vars for grid_mapping and mesh topology
-        for v in self.target_grid_ds.data_vars:
-            if "grid_mapping_name" in self.target_grid_ds[v].attrs:
-                if target_gm_name is None:
-                    target_gm_name = v
-                    if target_gm_name not in out.coords:
-                        out = out.assign_coords(
-                            {target_gm_name: self.target_grid_ds[v]}
-                        )
-            if self.target_grid_ds[v].attrs.get("cf_role") == "mesh_topology":
-                if target_mesh_name is None:
-                    target_mesh_name = v
-                    if target_mesh_name not in out.coords:
-                        out = out.assign_coords(
-                            {target_mesh_name: self.target_grid_ds[v]}
-                        )
+        # Ensure all variables referenced by the mesh topology are also included
+        if target_mesh_name:
+            topology_attrs = self.target_grid_ds[target_mesh_name].attrs
+            for attr in [
+                "face_node_connectivity",
+                "edge_node_connectivity",
+                "face_face_connectivity",
+                "face_edge_connectivity",
+                "edge_face_connectivity",
+                "node_coordinates",
+                "face_coordinates",
+                "edge_coordinates",
+            ]:
+                if attr in topology_attrs:
+                    ref_vars = topology_attrs[attr].split()
+                    for rv in ref_vars:
+                        if rv in self.target_grid_ds and rv not in out:
+                            out = out.assign_coords({rv: self.target_grid_ds[rv]})
 
         # Update global grid_mapping attribute if it exists
         if target_gm_name:
@@ -1883,8 +1918,7 @@ class Regridder:
                 out.attrs["grid_mapping"] = target_gm_name
         else:
             # Remove invalid grid_mapping
-            if "grid_mapping" in out.attrs:
-                del out.attrs["grid_mapping"]
+            out.attrs.pop("grid_mapping", None)
 
         # Propagate CRS metadata
         target_crs_obj = get_crs_info(self.target_grid_ds)

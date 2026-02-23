@@ -271,9 +271,11 @@ def test_regridder_mpi_non_root_rank():
     mock_mpi.COMM_WORLD = mock_comm
     mock_comm.gather.return_value = None
 
-    with patch("esmpy.pet_count", return_value=2), patch(
-        "esmpy.local_pet", return_value=1
-    ), patch.dict(sys.modules, {"mpi4py": mock_mpi}):
+    with (
+        patch("esmpy.pet_count", return_value=2),
+        patch("esmpy.local_pet", return_value=1),
+        patch.dict(sys.modules, {"mpi4py": mock_mpi}),
+    ):
         src = create_global_grid(10, 10)
         tgt = create_global_grid(5, 5)
         regridder = Regridder(src, tgt, mpi=True)

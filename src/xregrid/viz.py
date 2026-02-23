@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import xarray as xr
 
-from xregrid.utils import get_crs_info
+from xregrid.utils import get_crs_info, _find_coord
 
 if TYPE_CHECKING:
     from xregrid.regridder import Regridder
@@ -82,13 +82,20 @@ def plot_static(
     # Identify spatial and faceting dimensions to slice away everything else.
     # We do this early so it applies even if cartopy is missing.
 
-    # Identify spatial dimensions using cf-xarray for robust slicing
+    # Identify spatial dimensions using cf-xarray or fallbacks for robust slicing
     try:
-        # We look for dimensions associated with latitude and longitude
-        lat_dims = da.cf["latitude"].dims
-        lon_dims = da.cf["longitude"].dims
-        spatial_dims = set(lat_dims) | set(lon_dims)
-    except (KeyError, AttributeError, ImportError):
+        # Use enhanced discovery
+        lat_da = _find_coord(da, "latitude")
+        lon_da = _find_coord(da, "longitude")
+
+        if lat_da is not None and lon_da is not None:
+            spatial_dims = set(lat_da.dims) | set(lon_da.dims)
+        else:
+            # Fallback to cf-xarray directly
+            lat_dims = da.cf["latitude"].dims
+            lon_dims = da.cf["longitude"].dims
+            spatial_dims = set(lat_dims) | set(lon_dims)
+    except (KeyError, AttributeError, ImportError, ValueError):
         # Fallback to assuming the last two dimensions are spatial
         spatial_dims = set(da.dims[-2:])
 
@@ -658,16 +665,27 @@ def plot_weights(
     row = matrix.getrow(row_idx).toarray().flatten()
 
     # Reconstruct 2D/1D array on source grid
+    coords = {
+        c: regridder.source_grid_ds.coords[c]
+        for c in regridder.source_grid_ds.coords
+        if set(regridder.source_grid_ds.coords[c].dims).issubset(
+            set(regridder._dims_source)
+        )
+    }
+
+    # Include topology/mapping from source grid
+    for v in regridder.source_grid_ds.data_vars:
+        var_obj = regridder.source_grid_ds[v]
+        if (
+            var_obj.attrs.get("cf_role") == "mesh_topology"
+            or "grid_mapping_name" in var_obj.attrs
+        ):
+            coords[v] = var_obj
+
     da_weights = xr.DataArray(
         row.reshape(regridder._shape_source),
         dims=regridder._dims_source,
-        coords={
-            c: regridder.source_grid_ds.coords[c]
-            for c in regridder.source_grid_ds.coords
-            if set(regridder.source_grid_ds.coords[c].dims).issubset(
-                set(regridder._dims_source)
-            )
-        },
+        coords=coords,
         name="weights",
     )
 
