@@ -937,6 +937,9 @@ class Regridder:
                     # Handle cases where attributes might be stored as string representations
                     attr = attr.strip("()[]").replace(" ", "").split(",")
                     return tuple(int(x) if x.isdigit() else x for x in attr if x)
+                if isinstance(attr, (int, np.integer)):
+                    # Handle cases where attributes are single integer and so not iterable
+                    return (int(attr),)
                 return tuple(attr)
 
             self._shape_source = _to_tuple(ds_weights.attrs["shape_src"])
