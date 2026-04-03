@@ -226,32 +226,10 @@ def test_regridder_ugrid_with_time():
     # Setup mocked uxarray object with time dimension
     from unittest.mock import MagicMock
 
-    class UxDatasetMock:
+    class UxDatasetMock(xr.Dataset):
         def __init__(self, ds, uxgrid):
-            self._ds = ds
+            super().__init__(ds.data_vars, coords=ds.coords, attrs=ds.attrs)
             self.uxgrid = uxgrid
-
-        def __getattr__(self, name):
-            return getattr(self._ds, name)
-
-        def __getitem__(self, key):
-            return self._ds[key]
-
-        @property
-        def data_vars(self):
-            return self._ds.data_vars
-
-        @property
-        def coords(self):
-            return self._ds.coords
-
-        @property
-        def dims(self):
-            return self._ds.dims
-
-        @property
-        def sizes(self):
-            return self._ds.sizes
 
     n_face = 10
     n_node = 12

@@ -4,7 +4,7 @@ XRegrid provides a comprehensive gallery of examples demonstrating various earth
 
 ## View the Examples Gallery
 
-The most up-to-date and visual examples are available in our [Online Documentation Gallery](https://xregrid.readthedocs.io/examples/generated/).
+The most up-to-date and visual examples are available in our [Online Documentation Gallery](https://bbakernoaa.github.io/xregrid/examples/scripts/).
 
 ## Local Examples
 

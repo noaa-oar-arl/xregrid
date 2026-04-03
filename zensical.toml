@@ -1,10 +1,10 @@
 [project]
 site_name = "XRegrid Documentation"
-site_url = "https://xregrid.readthedocs.io"
+site_url = "https://bbakernoaa.github.io/xregrid"
 site_author = "XRegrid Contributors"
 site_description = "An optimized ESMF-based regridder for xarray"
-repo_name = "xregrid/xregrid"
-repo_url = "https://github.com/xregrid/xregrid"
+repo_name = "bbakernoaa/xregrid"
+repo_url = "https://github.com/bbakernoaa/xregrid"
 
 nav = [
     { "Home" = "index.md" },
@@ -13,10 +13,12 @@ nav = [
         { "Quick Start" = "user-guide/quickstart.md" },
         { "Command Line Interface" = "user-guide/cli.md" },
         { "Unstructured Grids" = "user-guide/unstructured.md" },
+        { "Visualization" = "user-guide/visualization.md" },
+        { "HPC and Dask" = "user-guide/hpc.md" },
         { "Performance" = "user-guide/performance.md" }
     ]},
     { "Examples" = [
-        { "Gallery" = "examples/generated/index.md" }
+        { "Gallery" = "examples/scripts/README.md" }
     ]},
     { "API Reference" = [
         { "Regridder" = "api/regridder.md" },
@@ -57,7 +59,7 @@ toggle.name = "Switch to light mode"
 [project.plugins.search]
 [project.plugins.gallery]
 examples_dirs = "docs/examples/scripts"
-gallery_dirs = "docs/examples/generated"
+gallery_dirs = "docs/examples/scripts"
 
 [project.plugins.mkdocstrings.handlers.python]
 paths = ["src"]
@@ -85,4 +87,4 @@ version = { provider = "mike" }
 
 [[project.extra.social]]
 icon = "fontawesome/brands/github"
-link = "https://github.com/xregrid/xregrid"
+link = "https://github.com/bbakernoaa/xregrid"

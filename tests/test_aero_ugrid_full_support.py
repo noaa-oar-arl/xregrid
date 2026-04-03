@@ -4,20 +4,39 @@ import xarray as xr
 from xregrid import Regridder, create_global_grid
 
 
-def create_mock_ugrid(n_nodes=10, n_faces=4):
-    """Create a mock UGRID dataset."""
-    # Nodes
-    node_x = np.linspace(0, 360, n_nodes)
-    node_y = np.linspace(-90, 90, n_nodes)
+def create_mock_ugrid(n_nodes=16, n_faces=9):
+    """Create a mock UGRID dataset using a regular quad mesh."""
+    # Ensure n_nodes is a square for simplicity in this mock
+    n_side = int(np.sqrt(n_nodes))
+    if n_side**2 != n_nodes:
+        # Fallback to next square
+        n_side = int(np.ceil(np.sqrt(n_nodes)))
+        n_nodes = n_side**2
 
-    # Faces (centers)
-    face_x = np.linspace(10, 350, n_faces)
-    face_y = np.linspace(-80, 80, n_faces)
+    x = np.linspace(0, 350, n_side)
+    y = np.linspace(-80, 80, n_side)
+    node_x_2d, node_y_2d = np.meshgrid(x, y)
+    node_x = node_x_2d.flatten()
+    node_y = node_y_2d.flatten()
 
-    # Simple triangulation: face 0 uses nodes 0,1,2; face 1 uses 1,2,3...
-    face_nodes = np.zeros((n_faces, 3), dtype=int)
-    for i in range(n_faces):
-        face_nodes[i] = [i, i + 1, (i + 2) % n_nodes]
+    # Create quads
+    face_nodes = []
+    face_x = []
+    face_y = []
+    for j in range(n_side - 1):
+        for i in range(n_side - 1):
+            n0 = j * n_side + i
+            n1 = j * n_side + i + 1
+            n2 = (j + 1) * n_side + i + 1
+            n3 = (j + 1) * n_side + i
+            face_nodes.append([n0, n1, n2, n3])
+            face_x.append((node_x[n0] + node_x[n2]) / 2)
+            face_y.append((node_y[n0] + node_y[n2]) / 2)
+
+    face_nodes = np.array(face_nodes)
+    n_faces = len(face_nodes)
+    face_x = np.array(face_x)
+    face_y = np.array(face_y)
 
     ds = xr.Dataset(
         data_vars={
@@ -75,7 +94,7 @@ def create_mock_ugrid(n_nodes=10, n_faces=4):
 
 def test_ugrid_discovery_and_regrid():
     """Verify UGRID discovery and regridding (Eager and Lazy)."""
-    src_ds = create_mock_ugrid(n_nodes=20, n_faces=10)
+    src_ds = create_mock_ugrid(n_nodes=25, n_faces=16)
     tgt_grid = create_global_grid(30, 30)
 
     # Test that Regridder can handle the UGRID dataset
@@ -99,8 +118,8 @@ def test_ugrid_discovery_and_regrid():
 
 def test_ugrid_scientific_hygiene():
     """Verify UGRID metadata propagation to UGRID target."""
-    src_ds = create_mock_ugrid(n_nodes=10, n_faces=4)
-    tgt_ds = create_mock_ugrid(n_nodes=15, n_faces=6)
+    src_ds = create_mock_ugrid(n_nodes=16, n_faces=9)
+    tgt_ds = create_mock_ugrid(n_nodes=25, n_faces=16)
 
     # For simplicity, use nearest_s2d which doesn't require complex connectivity for target
     regridder = Regridder(src_ds, tgt_ds, method="nearest_s2d")

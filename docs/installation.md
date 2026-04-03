@@ -10,7 +10,7 @@ The easiest way to install all dependencies, including `esmpy` and `xesmf`, is u
 
 ```bash
 # Clone the repository
-git clone https://github.com/xregrid/xregrid.git
+git clone https://github.com/bbakernoaa/xregrid.git
 cd xregrid
 
 # Create the environment from the provided yaml file
@@ -49,6 +49,12 @@ pip install -e ".[test]"
 # Install documentation tools (optional)
 pip install mkdocs mkdocs-material mkdocs-gallery
 ```
+
+## Installing against an existing ESMPy installation
+
+If you already have `esmpy` installed in your environment (e.g., via a custom ESMF build or a shared HPC module), `xregrid` will automatically detect it during installation and will not attempt to reinstall it.
+
+If `esmpy` is not found, `pip install .` will still succeed but will issue a warning. You will need to install `esmpy` separately for `xregrid` to function.
 
 ## Alternative: Installing ESMPy from Source
 
@@ -168,7 +174,7 @@ For large grids:
 
 ### Getting Help
 
-- Check the [Examples Gallery](examples/generated/index.md) for common use cases
+- Check the [Examples Gallery](examples/scripts/README.md) for common use cases
 - Review the [API documentation](api/regridder.md) for detailed parameter descriptions
 - Submit issues on GitHub for bugs or feature requests
 

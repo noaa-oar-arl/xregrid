@@ -451,10 +451,12 @@ def test_regridder_validate_weights_errors(tmp_path):
     tgt = create_global_grid(5, 5)
     weight_file = str(tmp_path / "weights_err.nc")
 
-    Regridder(src, tgt, method="bilinear", filename=weight_file, reuse_weights=True)
+    regridder = Regridder(
+        src, tgt, method="bilinear", filename=weight_file, reuse_weights=True
+    )
 
     with pytest.raises(ValueError, match="does not match loaded weights periodic"):
-        Regridder.from_weights(weight_file, src, tgt, periodic=True)
+        Regridder.from_weights(weight_file, src, tgt, periodic=not regridder.periodic)
 
     with pytest.raises(ValueError, match="does not match loaded weights skipna"):
         Regridder.from_weights(weight_file, src, tgt, skipna=True)

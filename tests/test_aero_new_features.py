@@ -1,8 +1,10 @@
 import os
+from unittest.mock import patch
+
+import dask.array as da
 import numpy as np
 import pytest
 import xarray as xr
-import dask.array as da
 from xregrid import Regridder, create_global_grid, plot
 
 
@@ -50,21 +52,20 @@ def test_generation_time_provenance():
         os.remove(filename)
 
 
-def test_unified_plot_dispatch(mocker):
+def test_unified_plot_dispatch():
     """Verify that the unified plot function dispatches correctly."""
     da_test = xr.DataArray(np.random.rand(10, 10), dims=("lat", "lon"), name="test")
 
     # Mock plot_static and plot_interactive
-    mock_static = mocker.patch("xregrid.viz.plot_static")
-    mock_interactive = mocker.patch("xregrid.viz.plot_interactive")
+    with patch("xregrid.viz.plot_static") as mock_static:
+        with patch("xregrid.viz.plot_interactive") as mock_interactive:
+            # Test static dispatch
+            plot(da_test, mode="static", custom_arg=True)
+            mock_static.assert_called_once_with(da_test, custom_arg=True)
 
-    # Test static dispatch
-    plot(da_test, mode="static", custom_arg=True)
-    mock_static.assert_called_once_with(da_test, custom_arg=True)
-
-    # Test interactive dispatch
-    plot(da_test, mode="interactive", custom_arg=False)
-    mock_interactive.assert_called_once_with(da_test, custom_arg=False)
+            # Test interactive dispatch
+            plot(da_test, mode="interactive", custom_arg=False)
+            mock_interactive.assert_called_once_with(da_test, custom_arg=False)
 
     # Test invalid mode
     with pytest.raises(ValueError, match="Unknown plotting mode"):

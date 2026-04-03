@@ -14,32 +14,24 @@ except ImportError:
     HAS_REAL_ESMF = False
 
 
-class UxDatasetMock:
+class UxDatasetMock(xr.Dataset):
     def __init__(self, ds, uxgrid):
-        self._ds = ds
+        super().__init__(ds.data_vars, coords=ds.coords, attrs=ds.attrs)
         self.uxgrid = uxgrid
 
-    def __getattr__(self, name):
-        return getattr(self._ds, name)
-
     def __getitem__(self, key):
-        return self._ds[key]
+        if key in ["lat_b", "lon_b"]:
+            # Mock the missing bounds
+            return xr.DataArray(
+                np.zeros((self.sizes["n_face"], 3)),
+                dims=["n_face", "nv"],
+                name=key,
+                attrs={"units": "degrees"},
+            )
+        return super().__getitem__(key)
 
-    @property
-    def data_vars(self):
-        return self._ds.data_vars
-
-    @property
-    def coords(self):
-        return self._ds.coords
-
-    @property
-    def dims(self):
-        return self._ds.dims
-
-    @property
-    def sizes(self):
-        return self._ds.sizes
+    def __contains__(self, key):
+        return super().__contains__(key) or key in ["lat_b", "lon_b"]
 
 
 def test_uxarray_support():

@@ -260,9 +260,20 @@ for file in files:
     ds_regridded.to_netcdf(output_file)
 ```
 
+### Spatial Slicing
+
+XRegrid includes a `spatial_slice` utility that robustly handles longitude wrapping when subsetting geographic data.
+
+```python
+from xregrid.utils import spatial_slice
+
+# Slice a 0-360 grid to a region crossing the dateline (-20 to 20 lon)
+subset = spatial_slice(ds, extent=(-20, 20, 30, 50))
+```
+
 ## Next Steps
 
-- Explore the [Examples Gallery](../examples/generated/index.md) for more complex use cases
+- Explore the [Examples Gallery](../examples/scripts/README.md) for more complex use cases
 - Learn about [Performance Optimization](performance.md) for large datasets
 - Check the [API Reference](../api/regridder.md) for all available options
 

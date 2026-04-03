@@ -51,7 +51,18 @@ def test_unstructured_bilinear_mesh_enhanced():
     )
 
     # Initialize Regridder with bilinear
-    # This should now NOT raise NotImplementedError
+    # Ensure mesh variable is identified correctly
+    src_grid.face_node_connectivity.attrs["mesh"] = "mesh"
+    src_grid["mesh"] = (
+        [],
+        0,
+        {
+            "cf_role": "mesh_topology",
+            "face_node_connectivity": "face_node_connectivity",
+            "node_coordinates": "lon_node lat_node",
+        },
+    )
+
     regridder = Regridder(src_grid, tgt_grid, method="bilinear")
 
     # 1. Test Eager (NumPy)
@@ -95,6 +106,17 @@ def test_unstructured_patch_mesh_enhanced():
     tgt_lat = xr.DataArray([0.5], dims="n_dst", name="lat")
     tgt_grid = xr.Dataset(coords={"lon": tgt_lon, "lat": tgt_lat})
 
+    # Ensure mesh variable is identified correctly
+    src_grid.face_node_connectivity.attrs["mesh"] = "mesh"
+    src_grid["mesh"] = (
+        [],
+        0,
+        {
+            "cf_role": "mesh_topology",
+            "face_node_connectivity": "face_node_connectivity",
+            "node_coordinates": "lon_node lat_node",
+        },
+    )
     regridder = Regridder(src_grid, tgt_grid, method="patch")
     da = xr.DataArray(
         [1.0, 1.0, 1.0, 1.0], dims="n_pts", coords={"lon_node": lon, "lat_node": lat}

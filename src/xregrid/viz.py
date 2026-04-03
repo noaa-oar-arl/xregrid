@@ -83,6 +83,8 @@ def plot_static(
     # We do this early so it applies even if cartopy is missing.
 
     # Identify spatial dimensions using cf-xarray or fallbacks for robust slicing
+    lat_da = None
+    lon_da = None
     try:
         # Use enhanced discovery
         lat_da = _find_coord(da, "latitude")
@@ -196,7 +198,16 @@ def plot_static(
     if is_faceted and "subplot_kws" not in kwargs:
         kwargs["subplot_kws"] = {"projection": projection}
 
-    im = da.plot(ax=ax, **kwargs)
+    if da.ndim == 1 and lat_da is not None and lon_da is not None:
+        # For unstructured 1D data, use scatter to ensure geospatial representation
+        # Following Aero "No Ambiguous Plots" rule.
+        if "x" not in kwargs:
+            kwargs["x"] = lon_da.name
+        if "y" not in kwargs:
+            kwargs["y"] = lat_da.name
+        im = da.plot.scatter(ax=ax, **kwargs)
+    else:
+        im = da.plot(ax=ax, **kwargs)
 
     if is_faceted:
         # im is a FacetGrid
@@ -291,6 +302,25 @@ def plot_interactive(
             "HvPlot is required for plot_interactive. "
             "Install it with `pip install hvplot`."
         )
+
+    # Automated CRS discovery for Track B (Interactive)
+    # This ensures "No Ambiguous Plots" even in exploratory mode.
+    if "geo" not in kwargs:
+        crs_obj = get_crs_info(da)
+        if crs_obj:
+            kwargs["geo"] = True
+
+    # Aero Protocol: Ensure 1D unstructured grids are rendered as maps, not line plots.
+    if da.ndim == 1 and "kind" not in kwargs:
+        lat_da = _find_coord(da, "latitude")
+        lon_da = _find_coord(da, "longitude")
+        if lat_da is not None and lon_da is not None:
+            kwargs["kind"] = "points"
+            if "x" not in kwargs:
+                kwargs["x"] = lon_da.name
+            if "y" not in kwargs:
+                kwargs["y"] = lat_da.name
+
     return da.hvplot(rasterize=rasterize, title=title, **kwargs)
 
 
@@ -641,6 +671,48 @@ def plot_comparison_interactive(
 def plot_weights(
     regridder: "Regridder",
     row_idx: int,
+    mode: str = "static",
+    **kwargs: Any,
+) -> Any:
+    """
+    Visualize source points contributing to a specific destination point.
+
+    Two-Track Rule:
+    - mode='static' (Track A): Publication-quality plot using Matplotlib/Cartopy.
+    - mode='interactive' (Track B): Exploratory plot using HvPlot/HoloViews.
+
+    Parameters
+    ----------
+    regridder : Regridder
+        The Regridder instance.
+    row_idx : int
+        The index of the destination point (0-based).
+    mode : str, default 'static'
+        The plotting mode: 'static' or 'interactive'.
+    **kwargs : Any
+        Additional arguments passed to the plotting functions.
+
+    Returns
+    -------
+    Any
+        The plot object.
+    """
+    if mode == "static":
+        return _plot_weights_static(regridder, row_idx, **kwargs)
+    elif mode == "interactive":
+        rasterize = kwargs.pop("rasterize", True)
+        return plot_weights_interactive(
+            regridder, row_idx, rasterize=rasterize, **kwargs
+        )
+    else:
+        raise ValueError(
+            f"Unknown plotting mode: '{mode}'. Must be 'static' or 'interactive'."
+        )
+
+
+def _plot_weights_static(
+    regridder: "Regridder",
+    row_idx: int,
     **kwargs: Any,
 ) -> Any:
     """
@@ -660,15 +732,80 @@ def plot_weights(
     Any
         The plot object.
     """
-    # Use weights property to ensure they are gathered if remote
-    matrix = regridder.weights
-    row = matrix.getrow(row_idx).toarray().flatten()
+    da_weights = _get_weight_row_da(regridder, row_idx)
+    return plot_static(
+        da_weights, title=f"Weights for Destination Point {row_idx}", **kwargs
+    )
+
+
+def plot_weights_interactive(
+    regridder: "Regridder",
+    row_idx: int,
+    rasterize: bool = True,
+    **kwargs: Any,
+) -> Any:
+    """
+    Track B: Exploratory interactive visualization of weights for a destination point.
+
+    Parameters
+    ----------
+    regridder : Regridder
+        The Regridder instance.
+    row_idx : int
+        The index of the destination point (0-based).
+    rasterize : bool, default True
+        Whether to rasterize the grid for large datasets.
+    **kwargs : Any
+        Additional arguments passed to plot_interactive.
+
+    Returns
+    -------
+    Any
+        The interactive plot object.
+    """
+    da_weights = _get_weight_row_da(regridder, row_idx)
+    return plot_interactive(
+        da_weights,
+        rasterize=rasterize,
+        title=f"Weights for Destination Point {row_idx}",
+        **kwargs,
+    )
+
+
+def _get_weight_row_da(regridder: "Regridder", row_idx: int) -> xr.DataArray:
+    """
+    Extract a single weight row as a DataArray, optimized for remote weights.
+
+    Parameters
+    ----------
+    regridder : Regridder
+        The Regridder instance.
+    row_idx : int
+        The index of the destination point.
+
+    Returns
+    -------
+    xr.DataArray
+        The weights on the source grid.
+    """
+    if hasattr(regridder._weights_matrix, "key"):
+        # Optimized Distributed Path: extract row on cluster
+        from .parallel import _get_weight_row_task
+
+        row = regridder._dask_client.submit(
+            _get_weight_row_task, regridder._weights_matrix, row_idx
+        ).result()
+    else:
+        # Eager Path
+        matrix = regridder.weights
+        row = matrix.getrow(row_idx).toarray().flatten()
 
     # Reconstruct 2D/1D array on source grid
     coords = {
         c: regridder.source_grid_ds.coords[c]
         for c in regridder.source_grid_ds.coords
-        if set(regridder.source_grid_ds.coords[c].dims).issubset(
+        if regridder._dims_source is not None
+        and set(regridder.source_grid_ds.coords[c].dims).issubset(
             set(regridder._dims_source)
         )
     }
@@ -688,7 +825,4 @@ def plot_weights(
         coords=coords,
         name="weights",
     )
-
-    return plot_static(
-        da_weights, title=f"Weights for Destination Point {row_idx}", **kwargs
-    )
+    return da_weights

@@ -52,7 +52,7 @@ def test_plot_diagnostics_smoke():
     plt.close(fig)
 
 
-def test_diagnostics_parallel_compatibility(mocker):
+def test_diagnostics_parallel_compatibility():
     """
     Aero Protocol: Verify that diagnostics still work for a regridder
     initialized in 'parallel' mode (mocked cluster).

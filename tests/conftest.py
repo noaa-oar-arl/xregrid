@@ -16,22 +16,38 @@ def setup_esmpy_mock():
                 self.max_index = np.array([36, 18])
             self.coords = {}
             self.items = {}
+            self.num_peri_dims = kwargs.get("num_peri_dims", 0) or 0
+            self.periodic_dim = kwargs.get("periodic_dim", None)
 
         def get_coords(self, coord_dim, staggerloc=0):
             key = (coord_dim, staggerloc)
             if key not in self.coords:
-                shape = list(self.max_index)
-                if staggerloc == 1:  # CORNER
-                    shape = [s + 1 for s in shape]
+                shape = [s + 1 for s in self.max_index]
+                if staggerloc == 0:  # CENTER
+                    shape = list(self.max_index)
+                elif staggerloc == 1:  # CORNER
+                    if (
+                        self.num_peri_dims
+                        and self.num_peri_dims > 0
+                        and self.periodic_dim is not None
+                    ):
+                        shape[self.periodic_dim] -= 1
                 self.coords[key] = np.zeros(tuple(shape))
             return self.coords[key]
 
         def get_item(self, item, staggerloc=0):
             key = (item, staggerloc)
             if key not in self.items:
-                shape = list(self.max_index)
-                if staggerloc == 1:  # CORNER
-                    shape = [s + 1 for s in shape]
+                shape = [s + 1 for s in self.max_index]
+                if staggerloc == 0:  # CENTER
+                    shape = list(self.max_index)
+                elif staggerloc == 1:  # CORNER
+                    if (
+                        self.num_peri_dims
+                        and self.num_peri_dims > 0
+                        and self.periodic_dim is not None
+                    ):
+                        shape[self.periodic_dim] -= 1
                 self.items[key] = np.zeros(tuple(shape))
             return self.items[key]
 

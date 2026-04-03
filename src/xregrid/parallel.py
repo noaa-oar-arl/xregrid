@@ -89,6 +89,25 @@ def _get_nnz_task(matrix: Any) -> int:
     return int(matrix.nnz)
 
 
+def _get_weight_row_task(matrix: Any, row_idx: int) -> np.ndarray:
+    """
+    Internal worker task to extract a single row from the sparse weight matrix.
+
+    Parameters
+    ----------
+    matrix : scipy.sparse.csr_matrix
+        The sparse weight matrix.
+    row_idx : int
+        The index of the destination point.
+
+    Returns
+    -------
+    np.ndarray
+        The row as a dense NumPy array.
+    """
+    return matrix.getrow(row_idx).toarray().flatten()
+
+
 def _populate_cache_task(value: Any, key: str) -> None:
     """
     Internal worker task to populate the worker-local cache with a value.

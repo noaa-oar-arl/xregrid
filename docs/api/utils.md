@@ -1,6 +1,6 @@
 # Utilities
 
-XRegrid provides several utility functions for creating standard grids and loading ESMF-formatted files.
+XRegrid provides several utility functions for creating standard grids, loading ESMF-formatted files, and performing common spatial operations.
 
 ## Grid Generation
 
@@ -33,6 +33,19 @@ ds = create_regional_grid(
     res_lat=0.25,
     res_lon=0.25
 )
+```
+
+### create_grid_like
+
+::: xregrid.create_grid_like
+
+Create a new grid dataset with the same extent and CRS as an existing object.
+
+```python
+from xregrid.utils import create_grid_like
+
+# Create a 0.5 degree grid matching the extent of an existing dataset
+new_grid = create_grid_like(ds, res=0.5)
 ```
 
 ### create_grid_from_crs
@@ -78,6 +91,60 @@ metadata = {
 ds = create_grid_from_ioapi(metadata)
 ```
 
+### create_mesh_from_coords
+
+::: xregrid.utils.create_mesh_from_coords
+
+Create an unstructured mesh dataset from 1D coordinates and a CRS.
+
+```python
+from xregrid.utils import create_mesh_from_coords
+import numpy as np
+
+lons = np.random.uniform(0, 360, 1000)
+lats = np.random.uniform(-90, 90, 1000)
+ds_mesh = create_mesh_from_coords(lons, lats, crs="EPSG:4326")
+```
+
+## Spatial Operations
+
+### spatial_slice
+
+::: xregrid.utils.spatial_slice
+
+Slice an xarray object to a spatial extent, robustly handling longitude wrapping.
+
+```python
+from xregrid.utils import spatial_slice
+
+# Slice a 0-360 grid to a region crossing the dateline (-20 to 20 lon)
+subset = spatial_slice(ds, extent=(-20, 20, 30, 50))
+```
+
+### unstructured_to_scrip
+
+::: xregrid.utils.unstructured_to_scrip
+
+Canonicalize an unstructured dataset (UGRID or MPAS) to SCRIP format.
+
+```python
+from xregrid.utils import unstructured_to_scrip
+
+scrip_ds = unstructured_to_scrip(ds_ugrid)
+```
+
+### mpas_to_scrip
+
+::: xregrid.utils.mpas_to_scrip
+
+Convert an MPAS-native dataset to a CF-compliant SCRIP-style format.
+
+```python
+from xregrid.utils import mpas_to_scrip
+
+scrip_ds = mpas_to_scrip(ds_mpas)
+```
+
 ## ESMF File Support
 
 ### load_esmf_file
@@ -91,4 +158,22 @@ from xregrid import load_esmf_file
 
 # Load an ESMF mesh file
 ds = load_esmf_file("path/to/mesh.nc")
+```
+
+## High-Performance Computing
+
+### get_rdhpcs_cluster
+
+::: xregrid.utils.get_rdhpcs_cluster
+
+Create a dask-jobqueue SLURMCluster for NOAA RDHPCS systems (Hera, Jet, Gaea, Ursa).
+
+```python
+from xregrid.utils import get_rdhpcs_cluster
+from distributed import Client
+
+# Automatically detect machine and setup cluster
+cluster = get_rdhpcs_cluster(account="your_account")
+cluster.scale(jobs=4)
+client = Client(cluster)
 ```
