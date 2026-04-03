@@ -940,7 +940,7 @@ class Regridder:
                 if isinstance(attr, (int, np.integer)):
                     # Handle cases where attributes are single integer and so not iterable
                     return (int(attr),)
-                return tuple(attr) 
+                return tuple(attr)
 
             self._shape_source = _to_tuple(ds_weights.attrs["shape_src"])
             self._shape_target = _to_tuple(ds_weights.attrs["shape_dst"])
